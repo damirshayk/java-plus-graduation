@@ -12,3 +12,16 @@ services:
 
   ewm-db:
     image: postgres:16.1
+    container_name: main-postgres
+    restart: on-failure
+    ports:
+      - "${EWM_DB_HOST_PORT}:${EWM_DB_CONTAINER_PORT}"
+    environment:
+      - POSTGRES_PASSWORD=${EWM_POSTGRES_PASSWORD}
+      - POSTGRES_USER=${EWM_POSTGRES_USER}
+      - POSTGRES_DB=${EWM_POSTGRES_DB}
+    healthcheck:
+      test: pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER
+      timeout: 5s
+      interval: 5s
+      retries: 10
