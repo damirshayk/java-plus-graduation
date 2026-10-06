@@ -7,7 +7,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.cloud.client.loadbalancer.LoadBalancerClient;
 import org.springframework.http.MediaType;
+import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.MethodValidationInterceptor;
@@ -16,9 +19,13 @@ import ru.practicum.ewm.StatsClient;
 import ru.practicum.ewm.controller.admin.AdminEventController;
 import ru.practicum.ewm.controller.priv.PrivateEventController;
 import ru.practicum.ewm.controller.publ.PublicEventController;
+import ru.practicum.ewm.dto.event.EventFullDto;
+import ru.practicum.ewm.dto.event.EventShortDto;
 import ru.practicum.ewm.exception.ErrorHandler;
 import ru.practicum.ewm.exception.NotFoundException;
 import ru.practicum.ewm.service.EventService;
+
+import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -72,6 +79,64 @@ class EventControllerTest {
                 .andExpect(status().isOk());
 
         verify(statsClient).hit(any(EndpointHitRequestDto.class));
+    }
+
+    @Test
+    void publicEventsShouldReturnOkWhenStatsServiceHasNoInstances() throws Exception {
+        MockMvc publicMockMvc = publicMvcWithoutStatsService();
+        EventShortDto event = new EventShortDto();
+        event.setId(10L);
+        event.setTitle("Опубликованное событие");
+        when(eventService.getPublicEvents(null, null, null, null, null, false, null, 0, 10))
+                .thenReturn(List.of(event));
+
+        publicMockMvc.perform(get("/events"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value(10))
+                .andExpect(jsonPath("$[0].title").value("Опубликованное событие"));
+
+        verify(eventService).getPublicEvents(null, null, null, null, null, false, null, 0, 10);
+    }
+
+    @Test
+    void publicEventShouldReturnOkWhenStatsServiceHasNoInstances() throws Exception {
+        MockMvc publicMockMvc = publicMvcWithoutStatsService();
+        EventFullDto event = new EventFullDto();
+        event.setId(10L);
+        event.setTitle("Опубликованное событие");
+        when(eventService.getPublicEvent(10L)).thenReturn(event);
+
+        publicMockMvc.perform(get("/events/10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(10))
+                .andExpect(jsonPath("$.title").value("Опубликованное событие"));
+
+        verify(eventService).getPublicEvent(10L);
+    }
+
+    @Test
+    void missingPublicEventShouldReturnNotFoundWhenStatsServiceHasNoInstances() throws Exception {
+        MockMvc publicMockMvc = publicMvcWithoutStatsService();
+        when(eventService.getPublicEvent(404L))
+                .thenThrow(new NotFoundException("Событие не найдено"));
+
+        publicMockMvc.perform(get("/events/404"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value("NOT_FOUND"))
+                .andExpect(jsonPath("$.reason").value("Требуемый объект не найден."));
+
+        verify(eventService).getPublicEvent(404L);
+    }
+
+    private MockMvc publicMvcWithoutStatsService() {
+        LoadBalancerClient loadBalancerClient = mock(LoadBalancerClient.class);
+        when(loadBalancerClient.choose("stats-server")).thenReturn(null);
+        StatsClient realStatsClient = new StatsClient("stats-server", loadBalancerClient,
+                new RestTemplateBuilder()
+                        .additionalCustomizers(rest -> MockRestServiceServer.bindTo(rest).build()));
+        return MockMvcBuilders.standaloneSetup(
+                validated(new PublicEventController(eventService, realStatsClient))
+        ).setControllerAdvice(new ErrorHandler()).build();
     }
 
     @Test
