@@ -1,0 +1,13 @@
+server:
+  port: 8080
+
+spring:
+  cloud:
+    gateway:
+      x-forwarded:
+        for-append: false
+      routes:
+        - id: main-service
+          uri: lb://main-service
+          predicates:
+            - Path=/admin/**,/users/**,/events/**,/categories/**,/compilations/**
