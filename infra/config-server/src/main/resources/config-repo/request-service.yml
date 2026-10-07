@@ -1,0 +1,33 @@
+server:
+  port: 0
+  forward-headers-strategy: native
+
+spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 1000
+            readTimeout: 2000
+    loadbalancer:
+      cache:
+        enabled: false
+  jackson:
+    default-property-inclusion: always
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:requests;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    locations: classpath:db/request-migration
+  sql:
+    init:
+      mode: never
+
+ewm:
+  event-service-id: event-service

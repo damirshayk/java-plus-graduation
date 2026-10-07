@@ -7,7 +7,23 @@ spring:
       x-forwarded:
         for-append: false
       routes:
-        - id: main-service
-          uri: lb://main-service
+        - id: user-service
+          uri: lb://user-service
+          predicates:
+            - Path=/admin/users/**
+        - id: comment-service
+          uri: lb://comment-service
+          predicates:
+            - Path=/users/*/events/*/comments,/users/*/events/*/comments/**
+        - id: request-service
+          uri: lb://request-service
+          predicates:
+            - Path=/users/*/requests,/users/*/requests/**,/users/*/events/*/requests,/users/*/events/*/requests/**
+        - id: event-service
+          uri: lb://event-service
           predicates:
             - Path=/admin/**,/users/**,/events/**,/categories/**,/compilations/**
+        - id: stats-server
+          uri: lb://stats-server
+          predicates:
+            - Path=/hit,/stats
