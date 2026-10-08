@@ -67,7 +67,7 @@ class CompilationServiceImplTest {
     @BeforeEach
     void setUp() {
         compilationService = new CompilationServiceImpl(compilationMapper, compilationRepository, eventRepository,
-                eventMapper, userDirectory,
+                eventMapper,
                 new EventDisplayEnrichment(userDirectory, mock(ConfirmedRequestCounter.class),
                         2, 1, 10, 2, 50, 5000, 1), transactionManager);
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());

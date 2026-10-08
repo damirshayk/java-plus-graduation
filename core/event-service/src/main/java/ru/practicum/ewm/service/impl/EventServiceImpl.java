@@ -126,8 +126,8 @@ public class EventServiceImpl implements EventService {
         requireOwner(userId, eventId, snapshot.initiatorId());
         validateUserState(snapshot.state());
         validateEventDate(request.getEventDate());
-        UserShortDto initiator = userDirectory.require(userId);
-        long confirmed = confirmedRequestCounter.count(eventId);
+        UserShortDto initiator = displayEnrichment.requireUser(userId);
+        long confirmed = displayEnrichment.confirmedCounts(List.of(eventId)).getOrDefault(eventId, 0L);
         long views = viewsByIds(List.of(eventId)).getOrDefault(eventUri(eventId), 0L);
         return transactionTemplate.execute(status -> {
             userDataGuard.lockForCreate(userId);
@@ -219,8 +219,8 @@ public class EventServiceImpl implements EventService {
                     : request.getEventDate();
             validatePublicationDate(date);
         }
-        UserShortDto initiator = userDirectory.require(snapshot.initiatorId());
-        long confirmed = confirmedRequestCounter.count(eventId);
+        UserShortDto initiator = displayEnrichment.requireUser(snapshot.initiatorId());
+        long confirmed = displayEnrichment.confirmedCounts(List.of(eventId)).getOrDefault(eventId, 0L);
         long views = viewsByIds(List.of(eventId)).getOrDefault(eventUri(eventId), 0L);
         return transactionTemplate.execute(status -> {
             userDataGuard.lockForCreate(snapshot.initiatorId());

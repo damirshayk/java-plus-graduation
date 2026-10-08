@@ -14,7 +14,6 @@ import ru.practicum.ewm.dto.compilation.NewCompilationDto;
 import ru.practicum.ewm.dto.compilation.UpdateCompilationRequest;
 import ru.practicum.ewm.dto.event.EventShortDto;
 import ru.practicum.ewm.dto.user.UserShortDto;
-import ru.practicum.ewm.client.user.UserDirectory;
 import ru.practicum.ewm.exception.ConflictException;
 import ru.practicum.ewm.exception.NotFoundException;
 import ru.practicum.ewm.mapper.CompilationMapper;
@@ -45,19 +44,17 @@ public class CompilationServiceImpl implements CompilationService {
     private final CompilationRepository compilationRepository;
     private final EventRepository eventRepository;
     private final EventMapper eventMapper;
-    private final UserDirectory userDirectory;
     private final EventDisplayEnrichment displayEnrichment;
     private final TransactionTemplate transactionTemplate;
 
     public CompilationServiceImpl(CompilationMapper compilationMapper, CompilationRepository compilationRepository,
-                                  EventRepository eventRepository, EventMapper eventMapper, UserDirectory userDirectory,
+                                  EventRepository eventRepository, EventMapper eventMapper,
                                   EventDisplayEnrichment displayEnrichment,
                                   PlatformTransactionManager transactionManager) {
         this.compilationMapper = compilationMapper;
         this.compilationRepository = compilationRepository;
         this.eventRepository = eventRepository;
         this.eventMapper = eventMapper;
-        this.userDirectory = userDirectory;
         this.displayEnrichment = displayEnrichment;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
@@ -186,8 +183,7 @@ public class CompilationServiceImpl implements CompilationService {
     }
 
     private Map<Long, UserShortDto> findUsers(List<Event> events) {
-        List<Long> ids = events.stream().map(Event::getInitiatorId).distinct().toList();
-        return ids.isEmpty() ? Map.of() : userDirectory.findAll(ids);
+        return displayEnrichment.findUsers(events.stream().map(Event::getInitiatorId).toList());
     }
 
     private List<CompilationDto> toDtos(List<Compilation> compilations, Map<Long, UserShortDto> users) {

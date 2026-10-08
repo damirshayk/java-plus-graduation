@@ -2,6 +2,7 @@ package ru.practicum.ewm.service;
 
 import feign.FeignException;
 import feign.Request;
+import feign.codec.DecodeException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -26,8 +27,11 @@ import ru.practicum.ewm.dto.event.UpdateEventUserRequest;
 import ru.practicum.ewm.dto.event.NewEventDto;
 import ru.practicum.ewm.dto.event.EventFullDto;
 import ru.practicum.ewm.dto.event.EventShortDto;
+import ru.practicum.ewm.dto.event.AdminEventStateAction;
 import ru.practicum.ewm.dto.user.UserShortDto;
+import ru.practicum.ewm.exception.NotFoundException;
 import ru.practicum.ewm.exception.ServiceUnavailableException;
+import ru.practicum.ewm.model.EventState;
 
 import java.util.List;
 import java.util.Map;
@@ -163,32 +167,71 @@ class EventNetworkTransactionIntegrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"users", "requests"})
-    void unavailableRequiredDataMustNotApplyUserOrAdminPatch(String dependency) {
-        if (dependency.equals("users")) {
-            when(users.get(1L)).thenAnswer(invocation -> {
-                assertOutsideTransaction();
-                throw unavailable();
-            });
-        } else {
-            when(requests.confirmedCounts(anyList())).thenAnswer(invocation -> {
-                assertOutsideTransaction();
-                throw unavailable();
-            });
-        }
-        UpdateEventUserRequest userPatch = new UpdateEventUserRequest();
-        userPatch.setTitle("Не сохранять");
-        UpdateEventAdminRequest adminPatch = new UpdateEventAdminRequest();
-        adminPatch.setTitle("Тоже не сохранять");
+    @CsvSource({"user,users", "user,requests", "user,both", "admin,users", "admin,requests", "admin,both",
+            "publish,users", "publish,requests", "publish,both", "reject,users", "reject,requests", "reject,both"})
+    void unavailableDisplayDataMustNotPreventPatch(String operation, String dependency) {
+        doAnswer(invocation -> {
+            assertOutsideTransaction();
+            return Map.of(10L, 3L);
+        }).when(requests).confirmedCounts(anyList());
+        if (!dependency.equals("requests")) failDependency("users", unavailable());
+        if (!dependency.equals("users")) failDependency("requests", unavailable());
+        EventState expectedState = switch (operation) {
+            case "publish" -> EventState.PUBLISHED;
+            case "reject" -> EventState.CANCELED;
+            default -> EventState.PENDING;
+        };
         new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
-            assertThatThrownBy(() -> service.updateUserEvent(1L, 10L, userPatch))
-                    .isInstanceOf(ServiceUnavailableException.class);
-            assertThatThrownBy(() -> service.updateAdminEvent(10L, adminPatch))
-                    .isInstanceOf(ServiceUnavailableException.class);
+            EventFullDto result = update(operation, "Сохранено");
+            assertThat(result.getId()).isEqualTo(10L);
+            assertThat(result.getTitle()).isEqualTo("Сохранено");
+            assertThat(result.getState()).isEqualTo(expectedState);
+            assertThat(result.getInitiator().getId()).isEqualTo(1L);
+            assertThat(result.getInitiator().getName()).isEqualTo(dependency.equals("requests")
+                    ? "Инициатор" : "Имя временно недоступно");
+            assertThat(result.getConfirmedRequests()).isEqualTo(dependency.equals("users") ? 3L : 0L);
+            if (operation.equals("publish")) assertThat(result.getPublishedOn()).isNotNull();
         });
-        assertThat(jdbc.queryForObject("SELECT title FROM events WHERE id = 10", String.class)).isEqualTo("Исходное");
-        if (dependency.equals("users")) verify(users, times(2)).get(1L);
-        else verify(requests, times(2)).confirmedCounts(List.of(10L));
+        assertThat(jdbc.queryForObject("SELECT title FROM events WHERE id = 10", String.class)).isEqualTo("Сохранено");
+        assertThat(jdbc.queryForObject("SELECT state FROM events WHERE id = 10", String.class))
+                .isEqualTo(expectedState.name());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"user,users", "user,requests", "admin,users", "admin,requests"})
+    void patchMustRestoreDisplayDataAfterDependencyRecovers(String operation, String dependency) {
+        failDependency(dependency, unavailable());
+        for (int attempt = 0; attempt < 3; attempt++) {
+            EventFullDto result = update(operation, "Во время отказа");
+            assertThat(result.getInitiator().getId()).isEqualTo(1L);
+            assertThat(result.getInitiator().getName()).isEqualTo(dependency.equals("users")
+                    ? "Имя временно недоступно" : "Инициатор");
+            assertThat(result.getConfirmedRequests()).isZero();
+        }
+        CircuitBreaker circuit = (CircuitBreaker) ReflectionTestUtils.getField(display,
+                dependency.equals("users") ? "usersCircuitBreaker" : "requestsCircuitBreaker");
+        assertThat(circuit.getState()).isEqualTo(CircuitBreaker.State.OPEN);
+        circuit.transitionToHalfOpenState();
+        doAnswer(invocation -> {
+            assertOutsideTransaction();
+            UserShortDto user = new UserShortDto();
+            user.setId(1L);
+            user.setName("Восстановленное имя");
+            return user;
+        }).when(users).get(1L);
+        doAnswer(invocation -> {
+            assertOutsideTransaction();
+            return Map.of(10L, 4L);
+        }).when(requests).confirmedCounts(anyList());
+
+        EventFullDto restored = update(operation, "После восстановления");
+
+        assertThat(restored.getInitiator().getId()).isEqualTo(1L);
+        assertThat(restored.getInitiator().getName()).isEqualTo("Восстановленное имя");
+        assertThat(restored.getConfirmedRequests()).isEqualTo(4L);
+        assertThat(circuit.getState()).isEqualTo(CircuitBreaker.State.CLOSED);
+        assertThat(jdbc.queryForObject("SELECT title FROM events WHERE id = 10", String.class))
+                .isEqualTo("После восстановления");
     }
 
     @Test
@@ -206,9 +249,7 @@ class EventNetworkTransactionIntegrationTest {
     }
 
     private FeignException unavailable() {
-        Request request = Request.create(Request.HttpMethod.GET, "http://remote/internal", Map.of(),
-                (byte[]) null, null, null);
-        return new FeignException.ServiceUnavailable("Недоступен", request, null, Map.of());
+        return new FeignException.ServiceUnavailable("Недоступен", remoteRequest(), null, Map.of());
     }
 
     @Test
@@ -236,27 +277,37 @@ class EventNetworkTransactionIntegrationTest {
                 assertThat(service.updateAdminEvent(10L, patch).getTitle()).isEqualTo("Администратор"));
     }
 
-    @Test
-    void failedCounterMustNotApplyUserOrAdminPatch() {
-        when(requests.confirmedCounts(anyList())).thenThrow(new IllegalStateException("Некорректный ответ"));
-        UpdateEventUserRequest userPatch = new UpdateEventUserRequest();
-        userPatch.setTitle("Не сохранять");
-        assertThatThrownBy(() -> service.updateUserEvent(1L, 10L, userPatch)).isInstanceOf(IllegalStateException.class);
-        UpdateEventAdminRequest adminPatch = new UpdateEventAdminRequest();
-        adminPatch.setTitle("Тоже не сохранять");
-        assertThatThrownBy(() -> service.updateAdminEvent(10L, adminPatch)).isInstanceOf(IllegalStateException.class);
+    @ParameterizedTest
+    @CsvSource({"user,users,missing", "user,users,decode", "user,users,programming",
+            "user,requests,missing", "user,requests,decode", "user,requests,programming",
+            "admin,users,missing", "admin,users,decode", "admin,users,programming",
+            "admin,requests,missing", "admin,requests,decode", "admin,requests,programming"})
+    void permanentRemoteErrorsMustNotApplyPatch(String operation, String dependency, String fault) {
+        RuntimeException error = switch (fault) {
+            case "missing" -> new FeignException.NotFound("Не найден", remoteRequest(), null, Map.of());
+            case "decode" -> new DecodeException(503, "Некорректный JSON", remoteRequest());
+            default -> new IllegalStateException("Ошибка кода");
+        };
+        failDependency(dependency, error);
+        assertThatThrownBy(() -> update(operation, "Не сохранять"))
+                .isInstanceOf(dependency.equals("users") && fault.equals("missing")
+                        ? NotFoundException.class : error.getClass());
         assertThat(jdbc.queryForObject("SELECT title FROM events WHERE id = 10", String.class)).isEqualTo("Исходное");
+        if (dependency.equals("users")) verify(users).get(1L);
+        else verify(requests).confirmedCounts(List.of(10L));
     }
 
     private void assertOutsideTransaction() {
         assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
     }
 
-    @Test
-    void userStateMustBeRecheckedOnFreshEntityAfterRemoteReply() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void userStateMustBeRecheckedOnFreshEntityAfterRemoteReply(boolean unavailable) {
         when(requests.confirmedCounts(anyList())).thenAnswer(invocation -> {
             assertOutsideTransaction();
             jdbc.update("UPDATE events SET state = 'PUBLISHED' WHERE id = 10");
+            if (unavailable) throw unavailable();
             return Map.of();
         });
         UpdateEventUserRequest patch = new UpdateEventUserRequest();
@@ -266,11 +317,13 @@ class EventNetworkTransactionIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT title FROM events WHERE id = 10", String.class)).isEqualTo("Исходное");
     }
 
-    @Test
-    void adminStateMustBeRecheckedOnFreshEntityAfterRemoteReply() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void adminStateMustBeRecheckedOnFreshEntityAfterRemoteReply(boolean unavailable) {
         when(requests.confirmedCounts(anyList())).thenAnswer(invocation -> {
             assertOutsideTransaction();
             jdbc.update("UPDATE events SET state = 'PUBLISHED' WHERE id = 10");
+            if (unavailable) throw unavailable();
             return Map.of();
         });
         UpdateEventAdminRequest patch = new UpdateEventAdminRequest();
@@ -292,5 +345,55 @@ class EventNetworkTransactionIntegrationTest {
         assertThatThrownBy(() -> service.updateUserEvent(1L, 10L, new UpdateEventUserRequest()))
                 .isInstanceOf(ru.practicum.ewm.exception.ConflictException.class);
         verifyNoInteractions(requests, stats, users);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void unknownCategoryMustRollbackPatchEvenWhenDisplayDataIsUnavailable(boolean admin) {
+        failDependency("users", unavailable());
+        failDependency("requests", unavailable());
+        UpdateEventUserRequest userPatch = new UpdateEventUserRequest();
+        userPatch.setTitle("Не сохранять");
+        userPatch.setCategory(99L);
+        UpdateEventAdminRequest adminPatch = new UpdateEventAdminRequest();
+        adminPatch.setTitle("Не сохранять");
+        adminPatch.setCategory(99L);
+        assertThatThrownBy(() -> {
+            if (admin) service.updateAdminEvent(10L, adminPatch);
+            else service.updateUserEvent(1L, 10L, userPatch);
+        }).isInstanceOf(NotFoundException.class);
+        assertThat(jdbc.queryForObject("SELECT title FROM events WHERE id = 10", String.class)).isEqualTo("Исходное");
+        assertThat(jdbc.queryForObject("SELECT category_id FROM events WHERE id = 10", Long.class)).isEqualTo(1L);
+    }
+
+    private EventFullDto update(String operation, String title) {
+        if (operation.equals("user")) {
+            UpdateEventUserRequest patch = new UpdateEventUserRequest();
+            patch.setTitle(title);
+            return service.updateUserEvent(1L, 10L, patch);
+        }
+        UpdateEventAdminRequest patch = new UpdateEventAdminRequest();
+        patch.setTitle(title);
+        if (operation.equals("publish")) patch.setStateAction(AdminEventStateAction.PUBLISH_EVENT);
+        if (operation.equals("reject")) patch.setStateAction(AdminEventStateAction.REJECT_EVENT);
+        return service.updateAdminEvent(10L, patch);
+    }
+
+    private void failDependency(String dependency, RuntimeException error) {
+        if (dependency.equals("users")) {
+            doAnswer(invocation -> {
+                assertOutsideTransaction();
+                throw error;
+            }).when(users).get(1L);
+        } else {
+            doAnswer(invocation -> {
+                assertOutsideTransaction();
+                throw error;
+            }).when(requests).confirmedCounts(anyList());
+        }
+    }
+
+    private Request remoteRequest() {
+        return Request.create(Request.HttpMethod.GET, "http://remote/internal", Map.of(), (byte[]) null, null, null);
     }
 }

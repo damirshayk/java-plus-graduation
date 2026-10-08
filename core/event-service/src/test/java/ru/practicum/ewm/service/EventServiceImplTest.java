@@ -213,18 +213,21 @@ class EventServiceImplTest {
 
     @Test
     void adminShouldPublishPendingEvent() {
+        UserShortDto user = user();
         Event event = new Event();
         event.setId(10L);
+        event.setInitiatorId(user.getId());
         event.setState(EventState.PENDING);
         event.setEventDate(LocalDateTime.now().plusDays(1));
         UpdateEventAdminRequest request = new UpdateEventAdminRequest();
         request.setStateAction(AdminEventStateAction.PUBLISH_EVENT);
         EventFullDto expected = new EventFullDto();
+        when(userDirectory.require(user.getId())).thenReturn(user);
         when(eventRepository.findInfoById(10L)).thenReturn(
-                Optional.of(new EventInfoDto(10L, null, event.getState(), 0, true)));
+                Optional.of(new EventInfoDto(10L, user.getId(), event.getState(), 0, true)));
         when(eventRepository.findEventDateById(10L)).thenReturn(Optional.of(event.getEventDate()));
         when(eventRepository.findById(10L)).thenReturn(Optional.of(event));
-        when(eventMapper.toFullDto(event, null, 0L, 0L)).thenReturn(expected);
+        when(eventMapper.toFullDto(event, user, 0L, 0L)).thenReturn(expected);
 
         EventFullDto result = eventService.updateAdminEvent(10L, request);
 

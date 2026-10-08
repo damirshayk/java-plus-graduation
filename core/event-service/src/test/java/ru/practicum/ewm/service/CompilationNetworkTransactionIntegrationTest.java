@@ -2,10 +2,12 @@ package ru.practicum.ewm.service;
 
 import feign.FeignException;
 import feign.Request;
+import feign.codec.DecodeException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -21,11 +23,11 @@ import ru.practicum.ewm.client.CommentCleanupClient;
 import ru.practicum.ewm.client.RequestClient;
 import ru.practicum.ewm.client.user.UserClient;
 import ru.practicum.ewm.dto.compilation.NewCompilationDto;
+import ru.practicum.ewm.dto.compilation.CompilationDto;
 import ru.practicum.ewm.dto.compilation.UpdateCompilationRequest;
 import ru.practicum.ewm.dto.user.UserShortDto;
 import ru.practicum.ewm.exception.ConflictException;
 import ru.practicum.ewm.exception.NotFoundException;
-import ru.practicum.ewm.exception.ServiceUnavailableException;
 
 import java.util.List;
 import java.util.Map;
@@ -128,27 +130,96 @@ class CompilationNetworkTransactionIntegrationTest {
         verifyNoInteractions(requests, stats);
     }
 
-    @Test
-    void unavailableUsersMustNotCreateCompilation() {
-        when(users.batch(anyList())).thenThrow(unavailable());
-        assertThatThrownBy(() -> service.create(newCompilation("Не сохранять")))
-                .isInstanceOf(ServiceUnavailableException.class);
-        assertThat(countCompilations()).isEqualTo(1);
+    @ParameterizedTest
+    @CsvSource({"true,false", "true,true", "false,false", "false,true"})
+    void unavailableUsersMustNotPreventCompilationWrite(boolean create, boolean callerTransaction) {
+        doAnswer(invocation -> {
+            assertOutsideTransaction();
+            throw unavailable();
+        }).when(users).batch(anyList());
+        Runnable operation = () -> {
+            CompilationDto result = write(create, "Сохранённая");
+            assertThat(result.getTitle()).isEqualTo("Сохранённая");
+            assertThat(result.getEvents()).hasSize(1);
+            var event = result.getEvents().iterator().next();
+            assertThat(event.getId()).isEqualTo(10L);
+            assertThat(event.getInitiator().getId()).isEqualTo(1L);
+            assertThat(event.getInitiator().getName()).isEqualTo("Имя временно недоступно");
+            assertThat(event.getConfirmedRequests()).isZero();
+            assertThat(event.getViews()).isZero();
+            assertThat(jdbc.queryForObject("SELECT title FROM compilations WHERE id = ?", String.class,
+                    result.getId())).isEqualTo("Сохранённая");
+        };
+        if (callerTransaction) new TransactionTemplate(transactionManager).executeWithoutResult(tx -> operation.run());
+        else operation.run();
+        assertThat(countCompilations()).isEqualTo(create ? 2 : 1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM compilations_events", Long.class))
+                .isEqualTo(create ? 2 : 1);
+        verifyNoInteractions(requests, stats);
     }
 
-    @Test
-    void unavailableUsersMustNotApplyPatch() {
-        when(users.batch(anyList())).thenThrow(unavailable());
-        assertThatThrownBy(() -> service.update(100L, patch("Не сохранять")))
-                .isInstanceOf(ServiceUnavailableException.class);
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void compilationWriteMustRestoreUserNamesAfterDependencyRecovers(boolean create) {
+        doAnswer(invocation -> {
+            assertOutsideTransaction();
+            throw unavailable();
+        }).when(users).batch(anyList());
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var result = write(create, "Во время отказа " + attempt);
+            assertThat(result.getEvents()).hasSize(1);
+            assertThat(result.getEvents().iterator().next().getInitiator().getName())
+                    .isEqualTo("Имя временно недоступно");
+        }
+        CircuitBreaker circuit = (CircuitBreaker) ReflectionTestUtils.getField(display, "usersCircuitBreaker");
+        assertThat(circuit.getState()).isEqualTo(CircuitBreaker.State.OPEN);
+        circuit.transitionToHalfOpenState();
+        doAnswer(invocation -> {
+            assertOutsideTransaction();
+            UserShortDto restored = user();
+            restored.setName("Восстановленное имя");
+            return List.of(restored);
+        }).when(users).batch(anyList());
+
+        var restored = write(create, "После восстановления");
+
+        assertThat(restored.getEvents()).hasSize(1);
+        var event = restored.getEvents().iterator().next();
+        assertThat(event.getInitiator().getId()).isEqualTo(1L);
+        assertThat(event.getInitiator().getName()).isEqualTo("Восстановленное имя");
+        assertThat(circuit.getState()).isEqualTo(CircuitBreaker.State.CLOSED);
+        assertThat(jdbc.queryForObject("SELECT title FROM compilations WHERE id = ?", String.class,
+                restored.getId())).isEqualTo("После восстановления");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"true,missing", "true,decode", "true,programming",
+            "false,missing", "false,decode", "false,programming"})
+    void permanentUserErrorsMustNotChangeCompilation(boolean create, String fault) {
+        RuntimeException error = switch (fault) {
+            case "missing" -> new FeignException.NotFound("Не найден", remoteRequest(), null, Map.of());
+            case "decode" -> new DecodeException(503, "Некорректный JSON", remoteRequest());
+            default -> new IllegalStateException("Ошибка кода");
+        };
+        doAnswer(invocation -> {
+            assertOutsideTransaction();
+            throw error;
+        }).when(users).batch(anyList());
+        assertThatThrownBy(() -> write(create, "Не сохранять"))
+                .isInstanceOf(fault.equals("missing") ? NotFoundException.class : error.getClass());
         assertThat(title()).isEqualTo("Исходная");
+        assertThat(countCompilations()).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM compilations_events", Long.class)).isEqualTo(1);
+        verify(users).batch(List.of(1L));
     }
 
-    @Test
-    void changedMembershipDuringRemoteCallMustRejectNullEventsPatch() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void changedMembershipDuringRemoteCallMustRejectNullEventsPatch(boolean unavailable) {
         when(users.batch(anyList())).thenAnswer(invocation -> {
+            assertOutsideTransaction();
             jdbc.update("DELETE FROM compilations_events WHERE compilation_id = 100");
+            if (unavailable) throw unavailable();
             return List.of(user());
         });
         assertThatThrownBy(() -> service.update(100L, patch("Не сохранять")))
@@ -157,10 +228,13 @@ class CompilationNetworkTransactionIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM compilations_events", Long.class)).isZero();
     }
 
-    @Test
-    void vanishedInitiallyExistingEventMustRejectCreate() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void vanishedInitiallyExistingEventMustRejectCreate(boolean unavailable) {
         when(users.batch(anyList())).thenAnswer(invocation -> {
+            assertOutsideTransaction();
             jdbc.update("DELETE FROM events WHERE id = 10");
+            if (unavailable) throw unavailable();
             return List.of(user());
         });
         assertThatThrownBy(() -> service.create(newCompilation("Не сохранять")))
@@ -191,6 +265,10 @@ class CompilationNetworkTransactionIntegrationTest {
         return NewCompilationDto.builder().title(title).events(Set.of(10L)).build();
     }
 
+    private CompilationDto write(boolean create, String title) {
+        return create ? service.create(newCompilation(title)) : service.update(100L, patch(title));
+    }
+
     private UpdateCompilationRequest patch(String title) {
         UpdateCompilationRequest patch = new UpdateCompilationRequest();
         patch.setTitle(title);
@@ -205,9 +283,16 @@ class CompilationNetworkTransactionIntegrationTest {
     }
 
     private FeignException unavailable() {
-        Request request = Request.create(Request.HttpMethod.POST, "http://user-service/internal/users/batch",
+        return new FeignException.ServiceUnavailable("Недоступен", remoteRequest(), null, Map.of());
+    }
+
+    private Request remoteRequest() {
+        return Request.create(Request.HttpMethod.POST, "http://user-service/internal/users/batch",
                 Map.of(), (byte[]) null, null, null);
-        return new FeignException.ServiceUnavailable("Недоступен", request, null, Map.of());
+    }
+
+    private void assertOutsideTransaction() {
+        assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
     }
 
     private long countCompilations() {

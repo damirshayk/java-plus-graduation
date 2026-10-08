@@ -8,6 +8,7 @@ import org.springframework.cloud.config.server.environment.NativeEnvironmentRepo
 import org.springframework.core.env.Environment;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -33,7 +34,7 @@ class NativeConfigRepositoryTest {
     void eventServiceConfigurationIsLoadedFromFlatRepository() {
         Map<?, ?> properties = findServiceProperties("event-service");
 
-        assertEquals("event-service", properties.get("spring.application.name"));
+        assertFalse(properties.containsKey("spring.application.name"));
         assertEquals(0, properties.get("server.port"));
         assertEquals("classpath:db/event-migration", properties.get("spring.flyway.locations"));
         assertEquals("validate", properties.get("spring.jpa.hibernate.ddl-auto"));
@@ -67,6 +68,8 @@ class NativeConfigRepositoryTest {
     void statsServerConfigurationIsLoadedFromFlatRepository() {
         Map<?, ?> properties = findServiceProperties("stats-server");
 
+        assertEquals(0, properties.get("server.port"));
+        assertEquals("always", properties.get("spring.jackson.default-property-inclusion"));
         assertTrue(properties.get("spring.datasource.url").toString().contains("mem:stats"));
         assertFalse(properties.containsKey("stats.service-id"));
         assertFalse(properties.containsKey("ewm.events.min-start-delay-hours"));
@@ -78,6 +81,7 @@ class NativeConfigRepositoryTest {
         Map<?, ?> properties = findServiceProperties("gateway-server");
 
         assertEquals(8080, properties.get("server.port"));
+        assertEquals(true, properties.get("spring.cloud.loadbalancer.cache.enabled"));
         assertEquals("lb://user-service", properties.get("spring.cloud.gateway.routes[0].uri"));
         assertEquals("Path=/admin/users/**", properties.get("spring.cloud.gateway.routes[0].predicates[0]"));
         assertEquals("lb://comment-service", properties.get("spring.cloud.gateway.routes[1].uri"));
@@ -113,12 +117,17 @@ class NativeConfigRepositoryTest {
         assertNull(environment.getProperty("ewm.events.min-start-delay-hours"));
         assertNull(environment.getProperty("spring.cloud.gateway.routes[0].uri"));
         assertNull(environment.getProperty("spring.cloud.gateway.routes[0].id"));
+        assertNull(environment.getProperty("spring.jackson.default-property-inclusion"));
+        assertNull(environment.getProperty("spring.cloud.loadbalancer.cache.enabled"));
+        assertNull(environment.getProperty("spring.cloud.openfeign.client.config.default.connectTimeout"));
+        assertNull(environment.getProperty("spring.cloud.openfeign.client.config.default.readTimeout"));
     }
 
     @Test
     void userServiceConfigurationHasOwnDatabaseAndBoundedTimeouts() {
         Map<?, ?> properties = findServiceProperties("user-service");
 
+        assertEquals(0, properties.get("server.port"));
         assertTrue(properties.get("spring.datasource.url").toString().contains("mem:users"));
         assertEquals("classpath:db/user-migration", properties.get("spring.flyway.locations"));
         assertEquals(false, properties.get("spring.cloud.loadbalancer.cache.enabled"));
@@ -132,6 +141,7 @@ class NativeConfigRepositoryTest {
     @Test
     void commentServiceConfigurationHasOwnDatabaseAndEventServiceDiscovery() {
         Map<?, ?> properties = findServiceProperties("comment-service");
+        assertEquals(0, properties.get("server.port"));
         assertTrue(properties.get("spring.datasource.url").toString().contains("mem:comments"));
         assertEquals("classpath:db/comment-migration", properties.get("spring.flyway.locations"));
         assertEquals("event-service", properties.get("ewm.event-service-id"));
@@ -144,9 +154,13 @@ class NativeConfigRepositoryTest {
     }
 
     @Test
-    void unknownServiceHasNoPropertySources() {
-        assertTrue(repository.findOne("unknown-service", "default", null).getPropertySources().isEmpty());
-        assertTrue(repository.findOne("main-service", "default", null).getPropertySources().isEmpty());
+    void unknownServiceHasOnlySharedClientDefaults() {
+        for (String application : List.of("unknown-service", "main-service")) {
+            List<PropertySource> sources = repository.findOne(application, "default", null).getPropertySources();
+
+            assertEquals(1, sources.size());
+            assertSharedClientDefaults(sources.get(0));
+        }
     }
 
     @Test
@@ -167,9 +181,33 @@ class NativeConfigRepositoryTest {
     private Map<?, ?> findServiceProperties(String application) {
         List<PropertySource> sources = repository.findOne(application, "default", null).getPropertySources();
 
-        assertEquals(1, sources.size());
+        assertEquals(2, sources.size());
         PropertySource source = sources.get(0);
         assertTrue(source.getName().contains("config-repo/" + application + ".yml"));
-        return source.getSource();
+        assertSharedClientDefaults(sources.get(1));
+        assertFalse(source.getSource().containsKey("spring.application.name"));
+        assertFalse(source.getSource().containsKey("spring.jackson.default-property-inclusion"));
+        assertFalse(source.getSource().containsKey("spring.cloud.openfeign.client.config.default.connectTimeout"));
+        assertFalse(source.getSource().containsKey("spring.cloud.openfeign.client.config.default.readTimeout"));
+        if (!"gateway-server".equals(application)) {
+            assertFalse(source.getSource().containsKey("spring.cloud.loadbalancer.cache.enabled"));
+        }
+
+        Map<Object, Object> properties = new LinkedHashMap<>();
+        for (PropertySource propertySource : sources) {
+            propertySource.getSource().forEach(properties::putIfAbsent);
+        }
+        assertEquals("always", properties.get("spring.jackson.default-property-inclusion"));
+        return properties;
+    }
+
+    private void assertSharedClientDefaults(PropertySource source) {
+        assertTrue(source.getName().contains("config-repo/application.yml"));
+        assertEquals(Map.of(
+                "spring.cloud.openfeign.client.config.default.connectTimeout", 1000,
+                "spring.cloud.openfeign.client.config.default.readTimeout", 2000,
+                "spring.cloud.loadbalancer.cache.enabled", false,
+                "spring.jackson.default-property-inclusion", "always"
+        ), source.getSource());
     }
 }

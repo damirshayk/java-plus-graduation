@@ -3,18 +3,6 @@ server:
   forward-headers-strategy: native
 
 spring:
-  cloud:
-    openfeign:
-      client:
-        config:
-          default:
-            connectTimeout: 1000
-            readTimeout: 2000
-    loadbalancer:
-      cache:
-        enabled: false
-  jackson:
-    default-property-inclusion: always
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:comments;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
     username: ${SPRING_DATASOURCE_USERNAME:sa}
