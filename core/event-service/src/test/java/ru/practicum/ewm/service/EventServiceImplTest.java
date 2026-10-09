@@ -58,13 +58,15 @@ class EventServiceImplTest {
 
     @BeforeEach
     void setUp() {
+        EventDisplayProperties displayProperties = new EventDisplayProperties();
+        displayProperties.getRetry().setBackoffMs(1);
         eventService = new EventServiceImpl(
                 eventRepository,
                 userDirectory,
                 categoryRepository,
                 eventMapper,
                 confirmedRequestCounter,
-                new EventDisplayEnrichment(userDirectory, confirmedRequestCounter, 2, 1, 10, 2, 50, 5000, 1),
+                new EventDisplayEnrichment(userDirectory, confirmedRequestCounter, displayProperties),
                 statsClient,
                 userDataGuard,
                 transactionManager,

@@ -5,6 +5,8 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.ewm.client.user.UserDirectory;
 import ru.practicum.ewm.dto.comment.CommentDto;
@@ -13,6 +15,7 @@ import ru.practicum.ewm.dto.comment.UpdateCommentRequest;
 import ru.practicum.ewm.dto.user.UserShortDto;
 import ru.practicum.ewm.exception.ConflictException;
 import ru.practicum.ewm.exception.NotFoundException;
+import ru.practicum.ewm.exception.ServiceUnavailableException;
 import ru.practicum.ewm.mapper.CommentMapper;
 import ru.practicum.ewm.model.Comment;
 import ru.practicum.ewm.client.event.EventDirectory;
@@ -73,20 +76,44 @@ public class CommentServiceImpl implements CommentService {
     }
 
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public List<CommentDto> getCommentsByEvent(Long userId, Long eventId, int from, int size) {
         log.info("Получение комментариев события id={} пользователем id={}", eventId, userId);
-        UserShortDto author = userDirectory.require(userId);
-        eventDirectory.require(eventId);
+        UserShortDto author;
+        ServiceUnavailableException unavailable = null;
+        try {
+            author = requireReadUser(userId);
+        } catch (ServiceUnavailableException exception) {
+            author = unavailableAuthor(userId);
+            unavailable = exception;
+        }
+        try {
+            requireReadEvent(eventId);
+        } catch (ServiceUnavailableException exception) {
+            if (unavailable == null) {
+                unavailable = exception;
+            }
+        }
 
         Pageable pageable = PageRequest.of(from / size, size);
         List<Comment> comments = commentRepository.findByEventIdAndUserId(eventId, userId, pageable).getContent();
-        return comments.stream().map(comment -> commentMapper.toDto(comment, author)).toList();
+        if (unavailable != null && comments.isEmpty()) {
+            throw unavailable;
+        }
+        UserShortDto checkedAuthor = author;
+        return comments.stream().map(comment -> commentMapper.toDto(comment, checkedAuthor)).toList();
     }
 
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public CommentDto getCommentById(Long userId, Long eventId, Long commentId) {
         log.info("Получение комментария id={} пользователем id={}", commentId, userId);
-        UserShortDto author = userDirectory.require(userId);
+        UserShortDto author;
+        try {
+            author = requireReadUser(userId);
+        } catch (ServiceUnavailableException exception) {
+            author = unavailableAuthor(userId);
+        }
         return commentMapper.toDto(requireComment(userId, eventId, commentId), author);
     }
 
@@ -117,6 +144,32 @@ public class CommentServiceImpl implements CommentService {
             commentRepository.delete(comment);
             log.info("Комментарий с id={} удалён", commentId);
         });
+    }
+
+    private UserShortDto requireReadUser(Long userId) {
+        UserShortDto user = userDirectory.require(userId);
+        if (user == null || user.getId() == null || !userId.equals(user.getId()) || user.getId() <= 0
+                || user.getName() == null) {
+            throw new IllegalStateException("Сервис пользователей вернул некорректные сведения о пользователе id=" + userId);
+        }
+        return user;
+    }
+
+    private void requireReadEvent(Long eventId) {
+        EventInfoDto event = eventDirectory.require(eventId);
+        if (event == null || event.id() == null || !eventId.equals(event.id()) || event.id() <= 0
+                || event.initiatorId() == null || event.initiatorId() <= 0 || event.state() == null
+                || event.participantLimit() == null || event.participantLimit() < 0
+                || event.requestModeration() == null) {
+            throw new IllegalStateException("Сервис событий вернул некорректные сведения о событии id=" + eventId);
+        }
+    }
+
+    private UserShortDto unavailableAuthor(Long userId) {
+        UserShortDto author = new UserShortDto();
+        author.setId(userId);
+        author.setName("Имя временно недоступно");
+        return author;
     }
 
     private Comment requireComment(Long userId, Long eventId, Long commentId) {

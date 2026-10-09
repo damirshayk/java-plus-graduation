@@ -14,6 +14,7 @@ import ru.practicum.ewm.dto.comment.NewCommentDto;
 import ru.practicum.ewm.dto.comment.UpdateCommentRequest;
 import ru.practicum.ewm.dto.user.UserShortDto;
 import ru.practicum.ewm.exception.NotFoundException;
+import ru.practicum.ewm.exception.ServiceUnavailableException;
 import ru.practicum.ewm.mapper.CommentMapper;
 import ru.practicum.ewm.model.Comment;
 import ru.practicum.ewm.client.event.EventDirectory;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -253,6 +255,146 @@ class CommentServiceImplTest {
         order.verify(dataGuard).lockForWrite(1L, 10L);
         order.verify(commentRepository).findByCommentIdAndUserIdAndEventId(100L, 1L, 10L);
         verifyNoInteractions(eventDirectory);
+    }
+
+    @Test
+    void commentListShouldUseOwnRowsAndOnePlaceholderDuringUserOutage() {
+        when(userDirectory.require(1L)).thenThrow(new ServiceUnavailableException("Сервис пользователей недоступен"));
+        when(eventDirectory.require(10L)).thenReturn(new EventInfoDto(10L, 2L, EventState.PUBLISHED, 0, true));
+        Comment comment = ownComment();
+        when(commentRepository.findByEventIdAndUserId(eq(10L), eq(1L), any()))
+                .thenReturn(new PageImpl<>(List.of(comment)));
+        when(commentMapper.toDto(eq(comment), any())).thenAnswer(invocation -> {
+            CommentDto dto = new CommentDto();
+            dto.setAuthor(invocation.getArgument(1));
+            return dto;
+        });
+
+        List<CommentDto> result = assertDoesNotThrow(() -> commentService.getCommentsByEvent(1L, 10L, 0, 10));
+
+        assertEquals(1, result.size());
+        assertEquals(1L, result.getFirst().getAuthor().getId());
+        assertEquals("Имя временно недоступно", result.getFirst().getAuthor().getName());
+        verify(commentRepository).findByEventIdAndUserId(eq(10L), eq(1L), any());
+        verify(userDirectory).require(1L);
+        verify(eventDirectory).require(10L);
+        verifyNoMoreInteractions(commentRepository, userDirectory, eventDirectory);
+        verifyNoInteractions(transactionManager, dataGuard);
+    }
+
+    @Test
+    void commentListShouldUseNonemptyOwnRowsDuringEventOutageWithoutReplacingKnownAuthor() {
+        when(eventDirectory.require(10L)).thenThrow(new ServiceUnavailableException("Сервис событий недоступен"));
+        Comment comment = ownComment();
+        CommentDto dto = new CommentDto();
+        when(commentRepository.findByEventIdAndUserId(eq(10L), eq(1L), any()))
+                .thenReturn(new PageImpl<>(List.of(comment)));
+        when(commentMapper.toDto(comment, author)).thenReturn(dto);
+
+        assertEquals(List.of(dto), assertDoesNotThrow(() -> commentService.getCommentsByEvent(1L, 10L, 0, 10)));
+
+        verify(commentMapper).toDto(same(comment), same(author));
+        verifyNoInteractions(transactionManager, dataGuard);
+    }
+
+    @Test
+    void commentListShouldUseOwnRowsWhenBothDependenciesAreUnavailable() {
+        when(userDirectory.require(1L)).thenThrow(new ServiceUnavailableException("Сервис пользователей недоступен"));
+        when(eventDirectory.require(10L)).thenThrow(new ServiceUnavailableException("Сервис событий недоступен"));
+        Comment comment = ownComment();
+        when(commentRepository.findByEventIdAndUserId(eq(10L), eq(1L), any()))
+                .thenReturn(new PageImpl<>(List.of(comment)));
+        CommentDto dto = new CommentDto();
+        when(commentMapper.toDto(eq(comment), any())).thenReturn(dto);
+
+        assertEquals(List.of(dto), assertDoesNotThrow(() -> commentService.getCommentsByEvent(1L, 10L, 0, 10)));
+
+        verify(commentMapper).toDto(eq(comment), argThat(user -> user.getId().equals(1L)
+                && user.getName().equals("Имя временно недоступно")));
+    }
+
+    @Test
+    void emptyCommentPageShouldPreserveDependencyFailureEvenWhenEarlierPagesMayExist() {
+        ServiceUnavailableException unavailable = new ServiceUnavailableException("Сервис событий недоступен");
+        when(eventDirectory.require(10L)).thenThrow(unavailable);
+        when(commentRepository.findByEventIdAndUserId(eq(10L), eq(1L), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        assertSame(unavailable, assertThrows(ServiceUnavailableException.class,
+                () -> commentService.getCommentsByEvent(1L, 10L, 100, 10)));
+
+        verify(commentRepository).findByEventIdAndUserId(eq(10L), eq(1L), any());
+        verifyNoInteractions(commentMapper, transactionManager, dataGuard);
+    }
+
+    @Test
+    void commentListShouldPreserveRemote404AfterUserOutageWithoutReadingLocalRows() {
+        when(userDirectory.require(1L)).thenThrow(new ServiceUnavailableException("Сервис пользователей недоступен"));
+        NotFoundException missing = new NotFoundException("Событие не найдено");
+        when(eventDirectory.require(10L)).thenThrow(missing);
+
+        assertSame(missing, assertThrows(NotFoundException.class,
+                () -> commentService.getCommentsByEvent(1L, 10L, 0, 10)));
+
+        verifyNoInteractions(commentRepository, commentMapper, transactionManager, dataGuard);
+    }
+
+    @Test
+    void commentListShouldRejectNullAndMalformedEventInsteadOfReadingLocalRows() {
+        for (EventInfoDto invalid : new EventInfoDto[]{null,
+                new EventInfoDto(11L, 2L, EventState.PUBLISHED, 0, true),
+                new EventInfoDto(10L, null, EventState.PUBLISHED, 0, true),
+                new EventInfoDto(10L, 2L, null, 0, true)}) {
+            when(eventDirectory.require(10L)).thenReturn(invalid);
+            assertThrows(IllegalStateException.class, () -> commentService.getCommentsByEvent(1L, 10L, 0, 10));
+        }
+        verifyNoInteractions(commentRepository, commentMapper, transactionManager, dataGuard);
+    }
+
+    @Test
+    void commentReadShouldRejectSuccessfulNullAndInvalidAuthorInsteadOfUsingFallback() {
+        UserShortDto wrong = new UserShortDto();
+        wrong.setId(2L);
+        wrong.setName("Другой автор");
+        UserShortDto nameless = new UserShortDto();
+        nameless.setId(1L);
+        for (UserShortDto invalid : new UserShortDto[]{null, wrong, nameless}) {
+            when(userDirectory.require(1L)).thenReturn(invalid);
+            assertThrows(IllegalStateException.class, () -> commentService.getCommentById(1L, 10L, 100L));
+        }
+        verifyNoInteractions(commentRepository, commentMapper, eventDirectory, transactionManager, dataGuard);
+    }
+
+    @Test
+    void commentByIdShouldUseOnlyMatchingLocalCommentAndPlaceholderDuringUserOutage() {
+        when(userDirectory.require(1L)).thenThrow(new ServiceUnavailableException("Сервис пользователей недоступен"));
+        Comment comment = ownComment();
+        when(commentRepository.findByCommentIdAndUserIdAndEventId(100L, 1L, 10L))
+                .thenReturn(Optional.of(comment));
+        when(commentMapper.toDto(eq(comment), any())).thenAnswer(invocation -> {
+            CommentDto dto = new CommentDto();
+            dto.setAuthor(invocation.getArgument(1));
+            return dto;
+        });
+
+        CommentDto result = assertDoesNotThrow(() -> commentService.getCommentById(1L, 10L, 100L));
+
+        assertEquals(1L, result.getAuthor().getId());
+        assertEquals("Имя временно недоступно", result.getAuthor().getName());
+        verify(commentRepository).findByCommentIdAndUserIdAndEventId(100L, 1L, 10L);
+        verify(userDirectory).require(1L);
+        verifyNoMoreInteractions(commentRepository, userDirectory);
+        verifyNoInteractions(eventDirectory, transactionManager, dataGuard);
+    }
+
+    @Test
+    void commentByIdShouldStillRejectForeignCommentDuringUserOutage() {
+        when(userDirectory.require(1L)).thenThrow(new ServiceUnavailableException("Сервис пользователей недоступен"));
+        when(commentRepository.findByCommentIdAndUserIdAndEventId(100L, 1L, 20L)).thenReturn(Optional.empty());
+
+        assertThrows(NotFoundException.class, () -> commentService.getCommentById(1L, 20L, 100L));
+
+        verifyNoInteractions(commentMapper, eventDirectory, transactionManager, dataGuard);
     }
 
     private Comment ownComment() {

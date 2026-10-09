@@ -95,7 +95,8 @@ class UserRepositoryTest {
 
     @Test
     void shouldDeleteUser() {
-        userRepository.deleteById(user.getId());
+        assertThat(userRepository.deleteUserById(user.getId())).isEqualTo(1);
+        assertThat(userRepository.deleteUserById(user.getId())).isZero();
         Optional<User> found = userRepository.findById(user.getId());
         assertThat(found).isEmpty();
     }

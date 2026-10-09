@@ -3,8 +3,18 @@ server:
   forward-headers-strategy: native
 
 spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    producer:
+      properties:
+        max.block.ms: 3000
+        request.timeout.ms: 3000
+        delivery.timeout.ms: 10000
+    consumer:
+      properties:
+        max.poll.records: 50
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:events;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:file:./data/events;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
     username: ${SPRING_DATASOURCE_USERNAME:sa}
     password: ${SPRING_DATASOURCE_PASSWORD:}
   flyway:
@@ -18,6 +28,15 @@ spring:
       mode: never
 
 ewm:
+  cleanup:
+    topic: ewm.user-data-cleanup.v1
+    publisher-enabled: true
+    relay-enabled: true
+    listener-enabled: true
+    batch-size: 50
+    relay-delay-ms: 1000
+    send-timeout-ms: 12000
+    retry-backoff-ms: 1000
   events:
     min-start-delay-hours: 2
   display:

@@ -19,7 +19,6 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.ewm.EwmEventServiceApplication;
 import ru.practicum.ewm.StatsClient;
-import ru.practicum.ewm.client.CommentCleanupClient;
 import ru.practicum.ewm.client.RequestClient;
 import ru.practicum.ewm.client.user.UserClient;
 import ru.practicum.ewm.dto.compilation.NewCompilationDto;
@@ -57,8 +56,6 @@ class CompilationNetworkTransactionIntegrationTest {
     private RequestClient requests;
     @MockBean
     private StatsClient stats;
-    @MockBean
-    private CommentCleanupClient comments;
 
     @BeforeEach
     void setUp() {

@@ -1,11 +1,10 @@
 package ru.practicum.ewm.service;
 
 import feign.FeignException;
-import feign.codec.DecodeException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import ru.practicum.ewm.client.RequestClient;
-import ru.practicum.ewm.exception.ServiceUnavailableException;
+import ru.practicum.ewm.exception.FeignExceptionMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -31,10 +30,7 @@ public class RemoteConfirmedRequestCounter implements ConfirmedRequestCounter {
         try {
             counts = client.confirmedCounts(ids);
         } catch (FeignException exception) {
-            if (!(exception instanceof DecodeException) && (exception.status() == -1 || exception.status() >= 500)) {
-                throw new ServiceUnavailableException("Сервис заявок временно недоступен");
-            }
-            throw exception;
+            throw FeignExceptionMapper.translate(exception, "Сервис заявок временно недоступен");
         }
         Set<Long> requestedIds = Set.copyOf(ids);
         if (counts == null || counts.entrySet().stream().anyMatch(entry ->

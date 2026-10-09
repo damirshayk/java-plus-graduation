@@ -5,7 +5,6 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.retry.Retry;
 import io.github.resilience4j.retry.RetryConfig;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import ru.practicum.ewm.client.user.UserDirectory;
 import ru.practicum.ewm.dto.user.UserShortDto;
@@ -28,26 +27,22 @@ public class EventDisplayEnrichment {
     private final CircuitBreaker requestsCircuitBreaker;
 
     public EventDisplayEnrichment(UserDirectory userDirectory, ConfirmedRequestCounter confirmedRequestCounter,
-            @Value("${ewm.display.retry.max-attempts:2}") int maxAttempts,
-            @Value("${ewm.display.retry.backoff-ms:100}") long backoffMs,
-            @Value("${ewm.display.circuit-breaker.sliding-window-size:10}") int windowSize,
-            @Value("${ewm.display.circuit-breaker.minimum-number-of-calls:2}") int minimumCalls,
-            @Value("${ewm.display.circuit-breaker.failure-rate-threshold:50}") float failureThreshold,
-            @Value("${ewm.display.circuit-breaker.wait-duration-in-open-state-ms:5000}") long openDurationMs,
-            @Value("${ewm.display.circuit-breaker.permitted-number-of-calls-in-half-open-state:1}") int halfOpenCalls) {
+            EventDisplayProperties properties) {
         this.userDirectory = userDirectory;
         this.confirmedRequestCounter = confirmedRequestCounter;
+        EventDisplayProperties.Retry retrySettings = properties.getRetry();
+        EventDisplayProperties.CircuitBreaker protection = properties.getCircuitBreaker();
         this.retry = Retry.of("event-display", RetryConfig.custom()
-                .maxAttempts(maxAttempts)
-                .waitDuration(Duration.ofMillis(backoffMs))
+                .maxAttempts(retrySettings.getMaxAttempts())
+                .waitDuration(Duration.ofMillis(retrySettings.getBackoffMs()))
                 .retryOnException(exception -> exception instanceof ServiceUnavailableException)
                 .build());
         CircuitBreakerConfig config = CircuitBreakerConfig.custom()
-                .slidingWindowSize(windowSize)
-                .minimumNumberOfCalls(minimumCalls)
-                .failureRateThreshold(failureThreshold)
-                .waitDurationInOpenState(Duration.ofMillis(openDurationMs))
-                .permittedNumberOfCallsInHalfOpenState(halfOpenCalls)
+                .slidingWindowSize(protection.getSlidingWindowSize())
+                .minimumNumberOfCalls(protection.getMinimumNumberOfCalls())
+                .failureRateThreshold(protection.getFailureRateThreshold())
+                .waitDurationInOpenState(Duration.ofMillis(protection.getWaitDurationInOpenStateMs()))
+                .permittedNumberOfCallsInHalfOpenState(protection.getPermittedNumberOfCallsInHalfOpenState())
                 .recordException(exception -> exception instanceof ServiceUnavailableException)
                 .ignoreException(exception -> !(exception instanceof ServiceUnavailableException))
                 .build();

@@ -432,7 +432,7 @@ class StatsClientTest {
         context.registerBean(RestTemplateBuilder.class, () -> new RestTemplateBuilder()
                 .requestFactory(() -> requestFactory)
                 .additionalCustomizers(rest -> server = MockRestServiceServer.bindTo(rest).build()));
-        context.register(StatsClient.class);
+        context.register(StatsClientConfiguration.class, StatsClient.class);
         context.refresh();
         client = context.getBean(StatsClient.class);
     }

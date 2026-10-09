@@ -12,6 +12,7 @@ import ru.practicum.ewm.dto.user.UserShortDto;
 import ru.practicum.ewm.dto.request.ParticipationRequestDto;
 import ru.practicum.ewm.exception.ConflictException;
 import ru.practicum.ewm.exception.NotFoundException;
+import ru.practicum.ewm.exception.ServiceUnavailableException;
 import ru.practicum.ewm.mapper.RequestMapper;
 import ru.practicum.ewm.model.*;
 import ru.practicum.ewm.client.event.EventDirectory;
@@ -270,6 +271,110 @@ public class RequestServiceImplTest {
         verify(eventDirectory).require(10L);
         verifyNoInteractions(requestRepository, requestMapper);
         verify(transactionManager).rollback(any());
+    }
+
+    @Test
+    void ownRequestsShouldUseNonemptyLocalRowsWhenUserIsTemporarilyUnavailable() {
+        ServiceUnavailableException unavailable = new ServiceUnavailableException("Сервис пользователей недоступен");
+        ParticipationRequest request = ParticipationRequest.builder()
+                .id(100L).requesterId(1L).eventId(10L).status(RequestStatus.PENDING).build();
+        ParticipationRequestDto dto = ParticipationRequestDto.builder().id(100L).requester(1L).event(10L).build();
+        when(userDirectory.require(1L)).thenThrow(unavailable);
+        when(requestRepository.findAllByRequesterId(1L)).thenReturn(List.of(request));
+        when(requestMapper.toDtoList(List.of(request))).thenReturn(List.of(dto));
+
+        assertEquals(List.of(dto), assertDoesNotThrow(() -> requestService.getUserRequests(1L)));
+
+        verify(requestRepository).findAllByRequesterId(1L);
+        verify(userDirectory).require(1L);
+        verifyNoMoreInteractions(requestRepository, userDirectory);
+        verifyNoInteractions(eventDirectory, transactionManager, requestDataGuard);
+    }
+
+    @Test
+    void ownRequestsShouldNotTreatEmptyRowsAsProofOfUserExistence() {
+        ServiceUnavailableException unavailable = new ServiceUnavailableException("Сервис пользователей недоступен");
+        when(userDirectory.require(1L)).thenThrow(unavailable);
+        when(requestRepository.findAllByRequesterId(1L)).thenReturn(List.of());
+
+        assertSame(unavailable, assertThrows(ServiceUnavailableException.class,
+                () -> requestService.getUserRequests(1L)));
+
+        verify(requestRepository).findAllByRequesterId(1L);
+        verifyNoInteractions(requestMapper, eventDirectory, transactionManager, requestDataGuard);
+    }
+
+    @Test
+    void ownRequestsShouldPreserveMissingUserAndProgrammerErrorsBeforeLocalRead() {
+        for (RuntimeException failure : List.of(new NotFoundException("Пользователь не найден"),
+                new IllegalStateException("Некорректный ответ"))) {
+            doThrow(failure).when(userDirectory).require(1L);
+            assertSame(failure, assertThrows(RuntimeException.class, () -> requestService.getUserRequests(1L)));
+        }
+        verifyNoInteractions(requestRepository, requestMapper, eventDirectory, transactionManager);
+    }
+
+    @Test
+    void ownRequestsShouldRejectSuccessfulNullOrInvalidUserBeforeLocalRead() {
+        for (UserShortDto invalid : new UserShortDto[]{null, user(2L, "Другой пользователь"), user(1L, null)}) {
+            when(userDirectory.require(1L)).thenReturn(invalid);
+            assertThrows(IllegalStateException.class, () -> requestService.getUserRequests(1L));
+        }
+        verifyNoInteractions(requestRepository, requestMapper, eventDirectory, transactionManager);
+    }
+
+    @Test
+    void participantsShouldUseLocalRowsOnlyAfterRealEventConfirmsOwnerDuringUserOutage() {
+        when(userDirectory.require(2L)).thenThrow(new ServiceUnavailableException("Сервис пользователей недоступен"));
+        when(eventDirectory.require(10L)).thenReturn(event);
+        ParticipationRequest request = ParticipationRequest.builder()
+                .id(100L).requesterId(1L).eventId(10L).status(RequestStatus.PENDING).build();
+        ParticipationRequestDto dto = ParticipationRequestDto.builder().id(100L).requester(1L).event(10L).build();
+        when(requestRepository.findAllByEventId(10L)).thenReturn(List.of(request));
+        when(requestMapper.toDtoList(List.of(request))).thenReturn(List.of(dto));
+
+        assertEquals(List.of(dto), assertDoesNotThrow(() -> requestService.getEventParticipants(2L, 10L)));
+
+        verify(userDirectory).require(2L);
+        var order = inOrder(eventDirectory, requestRepository);
+        order.verify(eventDirectory).require(10L);
+        order.verify(requestRepository).findAllByEventId(10L);
+        verifyNoMoreInteractions(eventDirectory, requestRepository, userDirectory);
+        verifyNoInteractions(transactionManager, requestDataGuard);
+    }
+
+    @Test
+    void participantsShouldRejectForeignInitiatorDuringUserOutageBeforeLocalRead() {
+        when(userDirectory.require(1L)).thenThrow(new ServiceUnavailableException("Сервис пользователей недоступен"));
+        when(eventDirectory.require(10L)).thenReturn(event);
+
+        assertThrows(ConflictException.class, () -> requestService.getEventParticipants(1L, 10L));
+
+        verifyNoInteractions(requestRepository, requestMapper, transactionManager, requestDataGuard);
+    }
+
+    @Test
+    void participantsShouldNeverInventOwnerDuringEventOutage() {
+        when(userDirectory.require(2L)).thenReturn(initiator);
+        ServiceUnavailableException unavailable = new ServiceUnavailableException("Сервис событий недоступен");
+        when(eventDirectory.require(10L)).thenThrow(unavailable);
+
+        assertSame(unavailable, assertThrows(ServiceUnavailableException.class,
+                () -> requestService.getEventParticipants(2L, 10L)));
+
+        verifyNoInteractions(requestRepository, requestMapper, transactionManager, requestDataGuard);
+    }
+
+    @Test
+    void participantsShouldPreserveEvent404EvenWhenUserIsUnavailable() {
+        when(userDirectory.require(2L)).thenThrow(new ServiceUnavailableException("Сервис пользователей недоступен"));
+        NotFoundException missing = new NotFoundException("Событие не найдено");
+        when(eventDirectory.require(10L)).thenThrow(missing);
+
+        assertSame(missing, assertThrows(NotFoundException.class,
+                () -> requestService.getEventParticipants(2L, 10L)));
+
+        verifyNoInteractions(requestRepository, requestMapper, transactionManager, requestDataGuard);
     }
 
     private UserShortDto user(Long id, String name) {

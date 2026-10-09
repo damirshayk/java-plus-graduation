@@ -18,6 +18,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.ewm.EwmCommentServiceApplication;
 import ru.practicum.ewm.client.event.EventClient;
 import ru.practicum.ewm.client.user.UserClient;
+import ru.practicum.ewm.cleanup.CleanupEventCodec;
+import ru.practicum.ewm.cleanup.CleanupEventType;
+import ru.practicum.ewm.cleanup.CommonCleanupEvent;
 import ru.practicum.ewm.dto.comment.NewCommentDto;
 import ru.practicum.ewm.dto.comment.UpdateCommentRequest;
 import ru.practicum.ewm.dto.event.EventInfoDto;
@@ -32,6 +35,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -57,6 +61,10 @@ class CommentDataCleanupIntegrationTest {
     private JdbcTemplate jdbc;
     @Autowired
     private CommentDataCleanupService cleanup;
+    @Autowired
+    private CommentCleanupListener listener;
+    @Autowired
+    private CleanupEventCodec codec;
     @Autowired
     private CommentDataGuard guard;
     @Autowired
@@ -101,8 +109,7 @@ class CommentDataCleanupIntegrationTest {
 
     @Test
     void cleanupMustDeleteAuthorOnOtherEventsAndAllAuthorsOnTargetEvents() throws Exception {
-        mvc.perform(post("/internal/users/1/comments/cleanup").contentType(MediaType.APPLICATION_JSON).content("[10]"))
-                .andExpect(status().isNoContent());
+        listener.consume(payload(1L, "[10]"));
 
         assertThat(ids()).containsExactly(300L, 400L);
         assertThat(jdbc.queryForObject("SELECT deleting FROM comment_user_guard WHERE user_id = ?",
@@ -114,8 +121,7 @@ class CommentDataCleanupIntegrationTest {
 
     @Test
     void emptyEventsMustOnlyDeleteAuthorComments() throws Exception {
-        mvc.perform(post("/internal/users/1/comments/cleanup").contentType(MediaType.APPLICATION_JSON).content("[]"))
-                .andExpect(status().isNoContent());
+        listener.consume(payload(1L, "[]"));
 
         assertThat(ids()).containsExactly(100L, 300L, 400L);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM comment_event_guard", Long.class)).isZero();
@@ -136,10 +142,9 @@ class CommentDataCleanupIntegrationTest {
     }
 
     @Test
-    void nullAndInvalidEventIdsMustReturn400WithoutWrites() throws Exception {
+    void nullAndInvalidEventIdsMustFailWithoutWrites() {
         for (String body : new String[]{"null", "[null]", "[0]", "[-1]"}) {
-            mvc.perform(post("/internal/users/1/comments/cleanup").contentType(MediaType.APPLICATION_JSON).content(body))
-                    .andExpect(status().isBadRequest());
+            assertThatThrownBy(() -> listener.consume(payload(1L, body))).isInstanceOf(IllegalArgumentException.class);
         }
         assertThat(ids()).containsExactly(100L, 200L, 300L, 400L);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM comment_user_guard", Long.class)).isZero();
@@ -347,6 +352,34 @@ class CommentDataCleanupIntegrationTest {
 
     private TransactionTemplate tx() {
         return new TransactionTemplate(transactionManager);
+    }
+
+    @Test
+    void duplicateAndReorderedPhasesMustNotUnfreezeOrRestoreData() {
+        String snapshot = payload(1L, "[10]");
+        listener.consume(snapshot);
+        listener.consume(codec.encode(new CommonCleanupEvent(UUID.randomUUID(),
+                CleanupEventType.USER_DELETED, 1L, List.of())));
+        listener.consume(snapshot);
+        assertThat(ids()).containsExactly(300L, 400L);
+        assertThat(jdbc.queryForObject("SELECT deleting FROM comment_event_guard WHERE event_id = 10", Boolean.class)).isTrue();
+        verifyNoInteractions(users, events);
+    }
+
+    @Test
+    void listenerMustRollbackDeletedCommentsAndMarkersTogether() {
+        assertThatThrownBy(() -> tx().executeWithoutResult(status -> {
+            listener.consume(payload(1L, "[10]"));
+            throw new IllegalStateException("Проверка отката");
+        })).isInstanceOf(IllegalStateException.class);
+        assertThat(ids()).containsExactly(100L, 200L, 300L, 400L);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM comment_user_guard", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM comment_event_guard", Long.class)).isZero();
+    }
+
+    private String payload(Long userId, String body) {
+        return "{\"eventId\":\"" + UUID.randomUUID() + "\",\"type\":\"USER_EVENTS_DELETED\",\"userId\":"
+                + userId + ",\"eventIds\":" + body + "}";
     }
 
     private List<Long> ids() {

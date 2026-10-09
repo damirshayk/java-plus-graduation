@@ -10,8 +10,10 @@ import ru.practicum.ewm.client.event.EventDirectory;
 import ru.practicum.ewm.dto.event.EventInfoDto;
 import ru.practicum.ewm.client.user.UserDirectory;
 import ru.practicum.ewm.dto.request.ParticipationRequestDto;
+import ru.practicum.ewm.dto.user.UserShortDto;
 import ru.practicum.ewm.exception.ConflictException;
 import ru.practicum.ewm.exception.NotFoundException;
+import ru.practicum.ewm.exception.ServiceUnavailableException;
 import ru.practicum.ewm.mapper.RequestMapper;
 import ru.practicum.ewm.model.*;
 import ru.practicum.ewm.repository.RequestRepository;
@@ -50,8 +52,16 @@ public class RequestServiceImpl implements RequestService {
 
     @Override
     public List<ParticipationRequestDto> getUserRequests(Long userId) {
-        userDirectory.require(userId);
+        ServiceUnavailableException unavailable = null;
+        try {
+            requireReadUser(userId);
+        } catch (ServiceUnavailableException exception) {
+            unavailable = exception;
+        }
         List<ParticipationRequest> requests = requestRepository.findAllByRequesterId(userId);
+        if (unavailable != null && requests.isEmpty()) {
+            throw unavailable;
+        }
         return requestMapper.toDtoList(requests);
     }
 
@@ -116,7 +126,12 @@ public class RequestServiceImpl implements RequestService {
 
     @Override
     public List<ParticipationRequestDto> getEventParticipants(Long userId, Long eventId) {
-        userDirectory.require(userId);
+        try {
+            requireReadUser(userId);
+        } catch (ServiceUnavailableException exception) {
+            log.warn("Сервис пользователей недоступен; права чтения заявок события id={} проверяются по инициатору",
+                    eventId);
+        }
         EventInfoDto event = requireEvent(eventId);
         requireInitiator(userId, event);
 
@@ -179,6 +194,14 @@ public class RequestServiceImpl implements RequestService {
                     .rejectedRequests(requestMapper.toDtoList(rejectedRequests))
                     .build();
         });
+    }
+
+    private void requireReadUser(Long userId) {
+        UserShortDto user = userDirectory.require(userId);
+        if (user == null || user.getId() == null || !userId.equals(user.getId()) || user.getId() <= 0
+                || user.getName() == null) {
+            throw new IllegalStateException("Сервис пользователей вернул некорректные сведения о пользователе id=" + userId);
+        }
     }
 
     private EventInfoDto requireEvent(Long eventId) {

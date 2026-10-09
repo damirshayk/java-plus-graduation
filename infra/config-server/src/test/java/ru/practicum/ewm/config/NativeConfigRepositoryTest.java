@@ -60,7 +60,7 @@ class NativeConfigRepositoryTest {
         assertEquals(false, properties.get("spring.cloud.loadbalancer.cache.enabled"));
         assertEquals(1000, properties.get("spring.cloud.openfeign.client.config.default.connectTimeout"));
         assertEquals(2000, properties.get("spring.cloud.openfeign.client.config.default.readTimeout"));
-        assertTrue(properties.get("spring.datasource.url").toString().contains("mem:events"));
+        assertTrue(properties.get("spring.datasource.url").toString().contains("file:./data/events"));
         assertFalse(properties.containsKey("spring.cloud.gateway.routes[0].uri"));
     }
 
@@ -128,7 +128,7 @@ class NativeConfigRepositoryTest {
         Map<?, ?> properties = findServiceProperties("user-service");
 
         assertEquals(0, properties.get("server.port"));
-        assertTrue(properties.get("spring.datasource.url").toString().contains("mem:users"));
+        assertTrue(properties.get("spring.datasource.url").toString().contains("file:./data/users"));
         assertEquals("classpath:db/user-migration", properties.get("spring.flyway.locations"));
         assertEquals(false, properties.get("spring.cloud.loadbalancer.cache.enabled"));
         assertEquals(1000, properties.get("spring.cloud.openfeign.client.config.default.connectTimeout"));
@@ -142,7 +142,7 @@ class NativeConfigRepositoryTest {
     void commentServiceConfigurationHasOwnDatabaseAndEventServiceDiscovery() {
         Map<?, ?> properties = findServiceProperties("comment-service");
         assertEquals(0, properties.get("server.port"));
-        assertTrue(properties.get("spring.datasource.url").toString().contains("mem:comments"));
+        assertTrue(properties.get("spring.datasource.url").toString().contains("file:./data/comments"));
         assertEquals("classpath:db/comment-migration", properties.get("spring.flyway.locations"));
         assertEquals("event-service", properties.get("ewm.event-service-id"));
         assertEquals("validate", properties.get("spring.jpa.hibernate.ddl-auto"));
@@ -164,9 +164,31 @@ class NativeConfigRepositoryTest {
     }
 
     @Test
+    void readRetryMustOnlyBeEnabledForRequestAndCommentServices() {
+        for (String application : List.of("request-service", "comment-service")) {
+            Map<?, ?> properties = findServiceProperties(application);
+            assertEquals(true, properties.get("ewm.read-retry.enabled"));
+            assertEquals(true, properties.get("spring.cloud.loadbalancer.retry.enabled"));
+            assertEquals(false, properties.get("spring.cloud.loadbalancer.retry.retry-on-all-operations"));
+            assertEquals(0, properties.get("spring.cloud.loadbalancer.retry.max-retries-on-same-service-instance"));
+            assertEquals(1, properties.get("spring.cloud.loadbalancer.retry.max-retries-on-next-service-instance"));
+            assertEquals(500, properties.get("spring.cloud.loadbalancer.retry.retryable-status-codes[0]"));
+            assertEquals(502, properties.get("spring.cloud.loadbalancer.retry.retryable-status-codes[1]"));
+            assertEquals(503, properties.get("spring.cloud.loadbalancer.retry.retryable-status-codes[2]"));
+            assertEquals(504, properties.get("spring.cloud.loadbalancer.retry.retryable-status-codes[3]"));
+            assertEquals("100ms", properties.get("spring.cloud.loadbalancer.retry.backoff.min-backoff"));
+        }
+        for (String application : List.of("event-service", "user-service")) {
+            Map<?, ?> properties = findServiceProperties(application);
+            assertFalse(properties.containsKey("ewm.read-retry.enabled"));
+            assertFalse(properties.containsKey("spring.cloud.loadbalancer.retry.retryable-status-codes[0]"));
+        }
+    }
+
+    @Test
     void requestServiceConfigurationHasOwnDatabaseAndEventServiceDiscovery() {
         Map<?, ?> properties = findServiceProperties("request-service");
-        assertTrue(properties.get("spring.datasource.url").toString().contains("mem:requests"));
+        assertTrue(properties.get("spring.datasource.url").toString().contains("file:./data/requests"));
         assertEquals(0, properties.get("server.port"));
         assertEquals("classpath:db/request-migration", properties.get("spring.flyway.locations"));
         assertEquals("event-service", properties.get("ewm.event-service-id"));

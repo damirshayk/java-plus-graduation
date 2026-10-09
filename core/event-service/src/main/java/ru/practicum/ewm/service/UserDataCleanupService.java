@@ -1,66 +1,48 @@
 package ru.practicum.ewm.service;
 
-import feign.FeignException;
-import feign.codec.DecodeException;
+import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.TransactionDefinition;
-import org.springframework.transaction.support.TransactionTemplate;
-import ru.practicum.ewm.client.CommentCleanupClient;
-import ru.practicum.ewm.client.RequestClient;
-import ru.practicum.ewm.exception.ServiceUnavailableException;
+import org.springframework.transaction.annotation.Transactional;
+import ru.practicum.ewm.cleanup.CleanupEventType;
+import ru.practicum.ewm.cleanup.CommonCleanupEvent;
+import ru.practicum.ewm.cleanup.SharedOutboxJdbc;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 @Service
+@RequiredArgsConstructor
 public class UserDataCleanupService {
+    private static final int SNAPSHOT_CHUNK_SIZE = 1000;
     private final UserDataGuard userDataGuard;
     private final JdbcTemplate jdbc;
-    private final CommentCleanupClient comments;
-    private final RequestClient requests;
-    private final TransactionTemplate localTransaction;
-    private final TransactionTemplate withoutTransaction;
+    private final SharedOutboxJdbc outbox;
 
-    public UserDataCleanupService(UserDataGuard userDataGuard, JdbcTemplate jdbc, CommentCleanupClient comments,
-                                  RequestClient requests,
-                                  PlatformTransactionManager transactionManager) {
-        this.userDataGuard = userDataGuard;
-        this.jdbc = jdbc;
-        this.comments = comments;
-        this.requests = requests;
-        this.localTransaction = new TransactionTemplate(transactionManager);
-        this.withoutTransaction = new TransactionTemplate(transactionManager);
-        this.withoutTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
-    }
-
-    public void deleteUserData(Long userId) {
-        withoutTransaction.executeWithoutResult(ignored -> {
-            List<Long> eventIds = localTransaction.execute(status -> {
-                userDataGuard.markDeleting(userId);
-                return jdbc.queryForList("SELECT id FROM events WHERE initiator_id = ? ORDER BY id",
-                        Long.class, userId);
-            });
-            try {
-                comments.cleanup(userId, eventIds);
-            } catch (FeignException exception) {
-                if (!(exception instanceof DecodeException) && (exception.status() == -1 || exception.status() >= 500)) {
-                    throw new ServiceUnavailableException("Сервис комментариев временно недоступен");
-                }
-                throw exception;
+    @Transactional
+    public void deleteUserData(CommonCleanupEvent event) {
+        if (event.type() != CleanupEventType.USER_DELETED) {
+            throw new IllegalArgumentException("Сервис событий обрабатывает только USER_DELETED");
+        }
+        int inserted = jdbc.update("INSERT INTO cleanup_inbox(event_id) VALUES (?) ON CONFLICT DO NOTHING",
+                event.eventId().toString());
+        if (inserted == 0) {
+            return;
+        }
+        Long userId = event.userId();
+        userDataGuard.markDeleting(userId);
+        List<Long> eventIds = jdbc.queryForList("SELECT id FROM events WHERE initiator_id = ? ORDER BY id", Long.class, userId);
+        List<CommonCleanupEvent> snapshots = new ArrayList<>();
+        if (eventIds.isEmpty()) {
+            snapshots.add(new CommonCleanupEvent(UUID.randomUUID(), CleanupEventType.USER_EVENTS_DELETED, userId, List.of()));
+        } else {
+            for (int offset = 0; offset < eventIds.size(); offset += SNAPSHOT_CHUNK_SIZE) {
+                snapshots.add(new CommonCleanupEvent(UUID.randomUUID(), CleanupEventType.USER_EVENTS_DELETED, userId,
+                        eventIds.subList(offset, Math.min(offset + SNAPSHOT_CHUNK_SIZE, eventIds.size()))));
             }
-            try {
-                requests.cleanup(userId, eventIds);
-            } catch (FeignException exception) {
-                if (!(exception instanceof DecodeException) && (exception.status() == -1 || exception.status() >= 500)) {
-                    throw new ServiceUnavailableException("Сервис заявок временно недоступен");
-                }
-                throw exception;
-            }
-            localTransaction.executeWithoutResult(status -> {
-                userDataGuard.markDeleting(userId);
-                jdbc.update("DELETE FROM events WHERE initiator_id = ?", userId);
-            });
-        });
+        }
+        outbox.enqueueAll(snapshots);
+        jdbc.update("DELETE FROM events WHERE initiator_id = ?", userId);
     }
 }

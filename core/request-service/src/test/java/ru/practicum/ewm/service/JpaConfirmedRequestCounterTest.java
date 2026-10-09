@@ -22,7 +22,7 @@ import static org.mockito.Mockito.when;
 class JpaConfirmedRequestCounterTest {
     @Mock
     private RequestRepository requestRepository;
-    private ConfirmedRequestCounter counter;
+    private JpaConfirmedRequestCounter counter;
 
     @BeforeEach
     void setUp() {

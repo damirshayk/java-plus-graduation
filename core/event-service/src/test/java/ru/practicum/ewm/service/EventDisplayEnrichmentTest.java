@@ -30,8 +30,10 @@ class EventDisplayEnrichmentTest {
     void setUp() {
         users = mock(UserClient.class);
         requests = mock(RequestClient.class);
+        EventDisplayProperties properties = new EventDisplayProperties();
+        properties.getRetry().setBackoffMs(1);
         display = new EventDisplayEnrichment(new UserDirectory(users), new RemoteConfirmedRequestCounter(requests),
-                2, 1, 10, 2, 50, 5000, 1);
+                properties);
     }
 
     @Test
@@ -98,8 +100,10 @@ class EventDisplayEnrichmentTest {
 
     @Test
     void openCircuitMustNotPerformRemoteCallOrRetryBackoff() {
+        EventDisplayProperties properties = new EventDisplayProperties();
+        properties.getRetry().setBackoffMs(500);
         display = new EventDisplayEnrichment(new UserDirectory(users), new RemoteConfirmedRequestCounter(requests),
-                2, 500, 10, 2, 50, 5000, 1);
+                properties);
         usersCircuit().transitionToOpenState();
         assertTimeoutPreemptively(Duration.ofMillis(200), () ->
                 assertThat(display.requireUser(1L).getName()).isEqualTo("Имя временно недоступно"));

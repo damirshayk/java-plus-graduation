@@ -5,6 +5,8 @@ import feign.Request;
 import feign.Response;
 import feign.codec.DecodeException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import ru.practicum.ewm.client.RequestClient;
 import ru.practicum.ewm.exception.ServiceUnavailableException;
 
@@ -14,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.*;
 
 class RemoteConfirmedRequestCounterTest {
@@ -59,21 +62,37 @@ class RemoteConfirmedRequestCounterTest {
     void transportAndServerErrorsMustBecome503WithoutAutomaticPostRetry() {
         for (int status : new int[]{-1, 500, 503}) {
             clearInvocations(client);
-            doThrow(failure(status)).when(client).confirmedCounts(List.of(10L));
-            assertThatThrownBy(() -> counter.count(10L)).isInstanceOf(ServiceUnavailableException.class);
+            FeignException failure = failure(status);
+            doThrow(failure).when(client).confirmedCounts(List.of(10L));
+            ServiceUnavailableException unavailable = assertThrows(ServiceUnavailableException.class,
+                    () -> counter.count(10L));
+            assertThat(unavailable.getCause()).isSameAs(failure);
             verify(client).confirmedCounts(List.of(10L));
             verifyNoMoreInteractions(client);
         }
     }
 
-    @Test
-    void decodeAndOtherHttpFailuresMustNotBeHiddenAs503() {
-        DecodeException decode = new DecodeException(500, "Ошибка декодирования", request());
+    @ParameterizedTest
+    @ValueSource(ints = {-1, 200, 404, 500})
+    void decodeFailuresMustBePreservedRegardlessOfStatus(int status) {
+        DecodeException decode = new DecodeException(status, "Ошибка декодирования", request());
         when(client.confirmedCounts(List.of(10L))).thenThrow(decode);
         assertThatThrownBy(() -> counter.count(10L)).isSameAs(decode);
-        FeignException notFound = failure(404);
-        doThrow(notFound).when(client).confirmedCounts(List.of(10L));
-        assertThatThrownBy(() -> counter.count(10L)).isSameAs(notFound);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {400, 404, 409, 429})
+    void otherHttpFailuresMustRemainUnchanged(int status) {
+        FeignException failure = failure(status);
+        doThrow(failure).when(client).confirmedCounts(List.of(10L));
+        assertThatThrownBy(() -> counter.count(10L)).isSameAs(failure);
+    }
+
+    @Test
+    void programmingErrorsMustRemainUnchanged() {
+        IllegalStateException failure = new IllegalStateException("Ошибка клиента");
+        doThrow(failure).when(client).confirmedCounts(List.of(10L));
+        assertThatThrownBy(() -> counter.count(10L)).isSameAs(failure);
     }
 
     @Test

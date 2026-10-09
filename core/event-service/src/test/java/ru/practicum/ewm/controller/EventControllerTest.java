@@ -16,6 +16,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.MethodValidationInterceptor;
 import ru.practicum.ewm.EndpointHitRequestDto;
 import ru.practicum.ewm.StatsClient;
+import ru.practicum.ewm.StatsClientProperties;
 import ru.practicum.ewm.controller.admin.AdminEventController;
 import ru.practicum.ewm.controller.priv.PrivateEventController;
 import ru.practicum.ewm.controller.publ.PublicEventController;
@@ -131,10 +132,11 @@ class EventControllerTest {
     private MockMvc publicMvcWithoutStatsService() {
         LoadBalancerClient loadBalancerClient = mock(LoadBalancerClient.class);
         when(loadBalancerClient.choose("stats-server")).thenReturn(null);
-        StatsClient realStatsClient = new StatsClient("stats-server", loadBalancerClient,
+        StatsClientProperties properties = new StatsClientProperties();
+        properties.getDiscovery().setBackoffMs(1);
+        StatsClient realStatsClient = new StatsClient(properties, loadBalancerClient,
                 new RestTemplateBuilder()
-                        .additionalCustomizers(rest -> MockRestServiceServer.bindTo(rest).build()),
-                2, 1, 1000, 2000, 10, 1, 50, 5000, 1);
+                        .additionalCustomizers(rest -> MockRestServiceServer.bindTo(rest).build()));
         return MockMvcBuilders.standaloneSetup(
                 validated(new PublicEventController(eventService, realStatsClient))
         ).setControllerAdvice(new ErrorHandler()).build();

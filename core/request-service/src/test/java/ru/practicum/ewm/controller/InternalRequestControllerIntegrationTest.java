@@ -16,7 +16,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import ru.practicum.ewm.RequestServiceApplication;
 import ru.practicum.ewm.client.event.EventClient;
 import ru.practicum.ewm.client.user.UserClient;
-import ru.practicum.ewm.service.ConfirmedRequestCounter;
+import ru.practicum.ewm.service.impl.JpaConfirmedRequestCounter;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -46,7 +46,7 @@ class InternalRequestControllerIntegrationTest {
     @Autowired
     private EntityManagerFactory entityManagerFactory;
     @SpyBean
-    private ConfirmedRequestCounter counter;
+    private JpaConfirmedRequestCounter counter;
     @MockBean
     private UserClient users;
     @MockBean

@@ -12,12 +12,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import ru.practicum.ewm.model.Event;
 import ru.practicum.ewm.client.user.UserClient;
-import ru.practicum.ewm.client.CommentCleanupClient;
 import ru.practicum.ewm.client.RequestClient;
 import ru.practicum.ewm.client.user.UserDirectory;
 import ru.practicum.ewm.repository.EventRepository;
 import ru.practicum.ewm.service.ConfirmedRequestCounter;
 import ru.practicum.ewm.service.EventService;
+import ru.practicum.ewm.service.EventDisplayProperties;
 import ru.practicum.ewm.service.UserDataGuard;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,9 +34,6 @@ class EventServiceContextTest {
 
     @MockBean
     private UserClient userClient;
-    @MockBean
-    private CommentCleanupClient commentCleanupClient;
-
     @MockBean
     private RequestClient requestClient;
 
@@ -55,7 +52,7 @@ class EventServiceContextTest {
     }
 
     @Test
-    @DisplayName("Сервис событий содержит только свои сущности и применяет одну миграцию")
+    @DisplayName("Сервис событий содержит свои сущности и миграции доставки очистки")
     void shouldLoadAllDomainModules() {
         assertThat(context.getBean(UserDirectory.class)).isNotNull();
         assertThat(context.getBean(UserDataGuard.class)).isNotNull();
@@ -67,6 +64,8 @@ class EventServiceContextTest {
         assertThat(context.containsBean("commentServiceImpl")).isFalse();
         assertThat(context.getBean(ConfirmedRequestCounter.class)).isNotNull();
         assertThat(context.getBean(StatsClient.class)).isNotNull();
+        assertThat(context.getBeansOfType(EventDisplayProperties.class)).hasSize(1);
+        assertThat(context.getBeansOfType(StatsClientProperties.class)).hasSize(1);
 
         assertThat(context.getBean(EventRepository.class)).isNotNull();
         assertThat(context.containsBean("requestRepository")).isFalse();
@@ -86,6 +85,6 @@ class EventServiceContextTest {
 
         assertThat(flyway.info().applied())
                 .extracting(migration -> migration.getVersion().getVersion())
-                .containsExactly("1");
+                .containsExactly("1", "2");
     }
 }

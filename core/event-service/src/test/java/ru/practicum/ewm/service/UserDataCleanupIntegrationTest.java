@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -15,20 +16,15 @@ import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.ewm.EwmEventServiceApplication;
 import ru.practicum.ewm.StatsClient;
 import ru.practicum.ewm.client.user.UserClient;
-import ru.practicum.ewm.client.CommentCleanupClient;
 import ru.practicum.ewm.client.RequestClient;
-import ru.practicum.ewm.dto.event.NewEventDto;
-import ru.practicum.ewm.exception.ServiceUnavailableException;
+import ru.practicum.ewm.cleanup.CleanupEventCodec;
+import ru.practicum.ewm.cleanup.CleanupEventType;
+import ru.practicum.ewm.cleanup.CommonCleanupEvent;
+import ru.practicum.ewm.cleanup.SharedOutboxJdbc;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
-import feign.FeignException;
-import feign.Request;
-import feign.Response;
-import java.nio.charset.StandardCharsets;
-import java.time.LocalDateTime;
+import java.util.UUID;
 import java.util.Map;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import ru.practicum.ewm.dto.compilation.CompilationDto;
@@ -52,7 +48,6 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.times;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.argThat;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(classes = EwmEventServiceApplication.class, properties = {
@@ -68,7 +63,11 @@ class UserDataCleanupIntegrationTest {
     @Autowired
     private JdbcTemplate jdbc;
     @Autowired
-    private UserDataCleanupService cleanup;
+    private EventCleanupListener listener;
+    @Autowired
+    private CleanupEventCodec codec;
+    @SpyBean
+    private SharedOutboxJdbc outbox;
     @Autowired
     private UserDataGuard guard;
     @Autowired
@@ -86,9 +85,6 @@ class UserDataCleanupIntegrationTest {
     @MockBean
     private StatsClient statsClient;
     @MockBean
-    private CommentCleanupClient comments;
-
-    @MockBean
     private RequestClient requests;
 
     @BeforeEach
@@ -99,6 +95,8 @@ class UserDataCleanupIntegrationTest {
         jdbc.update("DELETE FROM compilations");
         jdbc.update("DELETE FROM categories");
         jdbc.update("DELETE FROM user_data_guard");
+        jdbc.update("DELETE FROM cleanup_outbox");
+        jdbc.update("DELETE FROM cleanup_inbox");
         jdbc.update("INSERT INTO categories(id, name) VALUES (1, 'Категория')");
         insertEvent(10L, 1L);
         insertEvent(20L, 2L);
@@ -107,41 +105,42 @@ class UserDataCleanupIntegrationTest {
     }
 
     @Test
-    void cleanupShouldPreserveUnrelatedDataAndBeIdempotent() throws Exception {
-        mvc.perform(delete("/internal/users/1/data")).andExpect(status().isNoContent());
-        mvc.perform(delete("/internal/users/1/data")).andExpect(status().isNoContent());
-        mvc.perform(delete("/internal/users/999/data")).andExpect(status().isNoContent());
+    void cleanupShouldPreserveUnrelatedDataAndDeduplicateDelivery() {
+        String payload = userDeletedPayload(1L);
+        listener.consume(payload);
+        listener.consume(payload);
+        consume(999L);
 
         assertThat(jdbc.queryForList("SELECT id FROM events ORDER BY id", Long.class)).containsExactly(20L);
         assertThat(jdbc.queryForList("SELECT event_id FROM compilations_events ORDER BY event_id", Long.class)).containsExactly(20L);
         assertThat(count("categories")).isEqualTo(1);
         assertThat(count("compilations")).isEqualTo(1);
-        verify(requests).cleanup(1L, List.of(10L));
-        verify(requests).cleanup(1L, List.of());
-        verify(requests).cleanup(999L, List.of());
-        verifyNoInteractions(userClient);
+        assertThat(count("cleanup_inbox")).isEqualTo(2);
+        assertThat(snapshots(1L)).hasSize(1);
+        assertThat(snapshots(1L).getFirst().eventIds()).containsExactly(10L);
+        verifyNoInteractions(userClient, statsClient, requests);
     }
 
     @Test
-    void cleanupMustKeepFreezeWhenCallingTransactionRollsBack() {
+    void cleanupMustRollbackAllLocalEffectsWithCallingTransaction() {
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
 
         assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
-            cleanup.deleteUserData(1L);
+            consume(1L);
             assertThat(count("events")).isEqualTo(1);
-            assertThat(jdbc.queryForObject("SELECT deleting FROM user_data_guard WHERE user_id = ?", Boolean.class, 1L))
-                    .isTrue();
+            assertThat(count("cleanup_outbox")).isEqualTo(1);
             throw new IllegalStateException("Проверка отката");
         })).isInstanceOf(IllegalStateException.class);
 
-        assertThat(count("events")).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT deleting FROM user_data_guard WHERE user_id = ?", Boolean.class, 1L))
-                .isTrue();
+        assertThat(count("events")).isEqualTo(2);
+        assertThat(count("cleanup_outbox")).isZero();
+        assertThat(count("cleanup_inbox")).isZero();
+        assertThat(count("user_data_guard")).isZero();
     }
 
     @Test
     void staleUserResponseMustNotAllowCreationAfterCleanup() {
-        cleanup.deleteUserData(1L);
+        consume(1L);
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
 
         assertThatThrownBy(() -> tx.executeWithoutResult(status -> guard.lockForCreate(1L)))
@@ -173,7 +172,7 @@ class UserDataCleanupIntegrationTest {
             assertThat(locked.await(3, TimeUnit.SECONDS)).isTrue();
             var deletion = executor.submit(() -> {
                 cleanupStarted.countDown();
-                cleanup.deleteUserData(1L);
+                consume(1L);
             });
             assertThat(cleanupStarted.await(3, TimeUnit.SECONDS)).isTrue();
             assertThrows(TimeoutException.class, () -> deletion.get(150, TimeUnit.MILLISECONDS));
@@ -240,133 +239,86 @@ class UserDataCleanupIntegrationTest {
 
 
     @Test
-    void cleanupMustFreezeAndSnapshotBeforeRemoteCallOutsideTransaction() {
+    void snapshotMustBeSavedInsideSameTransactionBeforeEventDeletion() {
         doAnswer(invocation -> {
-            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
-            assertThat(invocation.<List<Long>>getArgument(1)).containsExactly(10L);
-            assertThat(jdbc.queryForObject("SELECT deleting FROM user_data_guard WHERE user_id = ?",
-                    Boolean.class, 1L)).isTrue();
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
+            List<CommonCleanupEvent> snapshots = invocation.getArgument(0);
+            assertThat(snapshots).hasSize(1);
+            assertThat(snapshots.getFirst().eventIds()).containsExactly(10L);
+            assertThat(jdbc.queryForObject("SELECT deleting FROM user_data_guard WHERE user_id = 1", Boolean.class)).isTrue();
             assertThat(count("events")).isEqualTo(2);
-            return null;
-        }).when(comments).cleanup(eq(1L), anyList());
+            return invocation.callRealMethod();
+        }).when(outbox).enqueueAll(anyList());
 
-        new TransactionTemplate(transactionManager).executeWithoutResult(status -> cleanup.deleteUserData(1L));
+        consume(1L);
 
         assertThat(count("events")).isEqualTo(1);
-        verify(comments).cleanup(1L, List.of(10L));
+        assertThat(snapshots(1L).getFirst().eventIds()).containsExactly(10L);
     }
 
     @Test
-    void remoteFailureMustRetainEventsAndFreezeCreatesUntilIdempotentRetry() {
-        insertEvent(30L, 1L);
-        doThrow(remoteFailure(503)).doNothing().when(comments).cleanup(1L, List.of(10L, 30L));
-
-        assertThatThrownBy(() -> cleanup.deleteUserData(1L)).isInstanceOf(ServiceUnavailableException.class);
-
-        assertThat(count("events")).isEqualTo(3);
-        assertThat(jdbc.queryForObject("SELECT deleting FROM user_data_guard WHERE user_id = ?",
-                Boolean.class, 1L)).isTrue();
-        when(userClient.get(1L)).thenReturn(user(1L));
-        NewEventDto dto = new NewEventDto();
-        dto.setCategory(1L);
-        dto.setEventDate(LocalDateTime.now().plusDays(2));
-        assertThatThrownBy(() -> eventService.createEvent(1L, dto)).isInstanceOf(NotFoundException.class);
-        assertThat(count("events")).isEqualTo(3);
-
-        cleanup.deleteUserData(1L);
-
-        assertThat(jdbc.queryForList("SELECT id FROM events ORDER BY id", Long.class)).containsExactly(20L);
-        verify(comments, times(2)).cleanup(1L, List.of(10L, 30L));
-    }
-
-    @Test
-    void connectionFailureMustBecome503() throws Exception {
-        doThrow(remoteFailure(-1)).when(comments).cleanup(eq(1L), anyList());
-        mvc.perform(delete("/internal/users/1/data")).andExpect(status().isServiceUnavailable());
-        assertThat(count("events")).isEqualTo(2);
-        assertThat(jdbc.queryForObject("SELECT deleting FROM user_data_guard WHERE user_id = ?",
-                Boolean.class, 1L)).isTrue();
-    }
-
-    @Test
-    void phaseTwoDatabaseFailureMustRollbackLocalDeletesButKeepInitialFreezeAndSnapshot() {
+    void databaseFailureMustRollbackInboxGuardSnapshotAndEventDeletionUntilRetry() {
+        String payload = userDeletedPayload(1L);
         jdbc.execute("CREATE TABLE cleanup_test_block(event_id BIGINT REFERENCES events(id))");
         jdbc.update("INSERT INTO cleanup_test_block(event_id) VALUES (10)");
         try {
-            assertThatThrownBy(() -> cleanup.deleteUserData(1L))
+            assertThatThrownBy(() -> listener.consume(payload))
                     .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
             assertThat(count("events")).isEqualTo(2);
-            assertThat(jdbc.queryForObject("SELECT deleting FROM user_data_guard WHERE user_id = ?",
-                    Boolean.class, 1L)).isTrue();
+            assertThat(count("cleanup_outbox")).isZero();
+            assertThat(count("cleanup_inbox")).isZero();
+            assertThat(count("user_data_guard")).isZero();
         } finally {
             jdbc.execute("DROP TABLE cleanup_test_block");
         }
 
-        cleanup.deleteUserData(1L);
+        listener.consume(payload);
 
-        verify(comments, times(2)).cleanup(1L, List.of(10L));
         assertThat(count("events")).isEqualTo(1);
-        verify(requests, times(2)).cleanup(1L, List.of(10L));
+        assertThat(count("cleanup_inbox")).isEqualTo(1);
+        assertThat(snapshots(1L).getFirst().eventIds()).containsExactly(10L);
     }
 
     @Test
-    void emptySnapshotMustStillCleanAuthorOnce() {
-        cleanup.deleteUserData(999L);
-        verify(comments).cleanup(999L, List.of());
-        verify(requests).cleanup(999L, List.of());
+    void emptySnapshotMustStillPublishAuthorCleanup() {
+        consume(999L);
+        assertThat(snapshots(999L)).hasSize(1);
+        assertThat(snapshots(999L).getFirst().eventIds()).isEmpty();
         assertThat(count("events")).isEqualTo(2);
     }
 
     @Test
-    void bothRemoteAcksMustFinishOutsideCallerTransactionBeforeLocalEventDeletion() {
-        doAnswer(invocation -> {
-            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
-            assertThat(invocation.<List<Long>>getArgument(1)).containsExactly(10L);
-            assertThat(count("events")).isEqualTo(2);
-            assertThat(jdbc.queryForObject("SELECT deleting FROM user_data_guard WHERE user_id = 1", Boolean.class))
-                    .isTrue();
-            return null;
-        }).when(requests).cleanup(eq(1L), anyList());
-        new TransactionTemplate(transactionManager).executeWithoutResult(tx -> cleanup.deleteUserData(1L));
-        var order = org.mockito.Mockito.inOrder(comments, requests);
-        order.verify(comments).cleanup(1L, List.of(10L));
-        order.verify(requests).cleanup(1L, List.of(10L));
-        assertThat(count("events")).isEqualTo(1);
-    }
-
-    @Test
-    void requestFailureAfterCommentSuccessMustRetainSnapshotAndAllowIdempotentRetry() {
-        doThrow(remoteFailure(503)).doNothing().when(requests).cleanup(1L, List.of(10L));
-        assertThatThrownBy(() -> cleanup.deleteUserData(1L)).isInstanceOf(ServiceUnavailableException.class);
+    void validSecondPhaseMustNotTriggerAnotherEventCleanup() {
+        listener.consume(codec.encode(new CommonCleanupEvent(UUID.randomUUID(),
+                CleanupEventType.USER_EVENTS_DELETED, 1L, List.of(10L))));
         assertThat(count("events")).isEqualTo(2);
-        assertThat(jdbc.queryForObject("SELECT deleting FROM user_data_guard WHERE user_id = 1", Boolean.class)).isTrue();
-        cleanup.deleteUserData(1L);
-        assertThat(jdbc.queryForList("SELECT id FROM events ORDER BY id", Long.class)).containsExactly(20L);
-        verify(comments, times(2)).cleanup(1L, List.of(10L));
-        verify(requests, times(2)).cleanup(1L, List.of(10L));
+        assertThat(count("cleanup_outbox")).isZero();
+        assertThat(count("cleanup_inbox")).isZero();
     }
 
     @Test
-    void requestConnectionAndServerFailuresMustStopPhaseTwoWith503() throws Exception {
-        for (int status : new int[]{-1, 500, 503}) {
-            doThrow(remoteFailure(status)).when(requests).cleanup(1L, List.of(10L));
-            mvc.perform(delete("/internal/users/1/data")).andExpect(status().isServiceUnavailable());
-            assertThat(count("events")).isEqualTo(2);
+    void malformedMessageMustFailBeforeAnyDatabaseWrite() {
+        for (String payload : List.of("null", "{}", "broken",
+                userDeletedPayload(1L).replace("USER_DELETED", "UNKNOWN"))) {
+            assertThatThrownBy(() -> listener.consume(payload)).isInstanceOf(IllegalArgumentException.class);
         }
-        verify(comments, times(3)).cleanup(1L, List.of(10L));
+        assertThat(count("events")).isEqualTo(2);
+        assertThat(count("cleanup_outbox")).isZero();
+        assertThat(count("cleanup_inbox")).isZero();
+        assertThat(count("user_data_guard")).isZero();
     }
 
     @Test
-    void requestDecodeAndOtherHttpFailuresMustKeepTheirOriginalMeaning() {
-        Request request = Request.create(Request.HttpMethod.DELETE, "http://request-service/internal/requests/users/1",
-                Map.of(), null, StandardCharsets.UTF_8, null);
-        feign.codec.DecodeException decode = new feign.codec.DecodeException(500, "Некорректный ответ", request);
-        doThrow(decode).when(requests).cleanup(1L, List.of(10L));
-        assertThatThrownBy(() -> cleanup.deleteUserData(1L)).isSameAs(decode);
-        FeignException invalid = remoteFailure(400);
-        doThrow(invalid).when(requests).cleanup(1L, List.of(10L));
-        assertThatThrownBy(() -> cleanup.deleteUserData(1L)).isSameAs(invalid);
-        assertThat(count("events")).isEqualTo(2);
+    void largeSnapshotMustBeSplitWithoutLosingEventIds() {
+        for (long id = 1000; id <= 2000; id++) {
+            insertEvent(id, 1L);
+        }
+        consume(1L);
+        List<CommonCleanupEvent> saved = snapshots(1L);
+        assertThat(saved).hasSize(2);
+        assertThat(saved).allSatisfy(event -> assertThat(event.eventIds()).hasSizeLessThanOrEqualTo(1000));
+        assertThat(saved.stream().flatMap(event -> event.eventIds().stream()).distinct().count()).isEqualTo(1002);
+        assertThat(jdbc.queryForList("SELECT id FROM events ORDER BY id", Long.class)).containsExactly(20L);
     }
 
     @Test
@@ -383,7 +335,7 @@ class UserDataCleanupIntegrationTest {
                 .andExpect(jsonPath("$.requestModeration").value(true))
                 .andExpect(jsonPath("$.initiator").doesNotExist());
         assertThat(statistics.getPrepareStatementCount()).isEqualTo(1);
-        verifyNoInteractions(userClient, statsClient, comments);
+        verifyNoInteractions(userClient, statsClient);
         mvc.perform(get("/internal/events/999")).andExpect(status().isNotFound());
         mvc.perform(get("/internal/events/0")).andExpect(status().isNotFound());
         mvc.perform(get("/internal/events/-1")).andExpect(status().isNotFound());
@@ -403,14 +355,20 @@ class UserDataCleanupIntegrationTest {
                 .andExpect(jsonPath("$.requestModeration").value(false));
 
         assertThat(statistics.getPrepareStatementCount()).isEqualTo(1);
-        verifyNoInteractions(userClient, statsClient, comments);
+        verifyNoInteractions(userClient, statsClient);
     }
 
-    private FeignException remoteFailure(int status) {
-        Request request = Request.create(Request.HttpMethod.POST, "http://comment-service/internal/users/1/comments/cleanup",
-                Map.of(), null, StandardCharsets.UTF_8, null);
-        return FeignException.errorStatus("CommentCleanupClient#cleanup",
-                Response.builder().status(status).request(request).headers(Map.of()).build());
+    private void consume(Long userId) {
+        listener.consume(userDeletedPayload(userId));
+    }
+
+    private String userDeletedPayload(Long userId) {
+        return codec.encode(new CommonCleanupEvent(UUID.randomUUID(), CleanupEventType.USER_DELETED, userId, List.of()));
+    }
+
+    private List<CommonCleanupEvent> snapshots(Long userId) {
+        return jdbc.queryForList("SELECT payload FROM cleanup_outbox WHERE user_id = ? ORDER BY created_at, event_id",
+                String.class, userId).stream().map(codec::decode).toList();
     }
 
     private UserShortDto user(Long id) {

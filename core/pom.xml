@@ -17,6 +17,7 @@
 
     <modules>
         <module>api-errors</module>
+        <module>cleanup-events</module>
         <module>user-client</module>
         <module>event-client</module>
         <module>user-service</module>

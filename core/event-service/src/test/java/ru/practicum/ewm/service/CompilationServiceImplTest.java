@@ -66,10 +66,12 @@ class CompilationServiceImplTest {
 
     @BeforeEach
     void setUp() {
+        EventDisplayProperties displayProperties = new EventDisplayProperties();
+        displayProperties.getRetry().setBackoffMs(1);
         compilationService = new CompilationServiceImpl(compilationMapper, compilationRepository, eventRepository,
                 eventMapper,
                 new EventDisplayEnrichment(userDirectory, mock(ConfirmedRequestCounter.class),
-                        2, 1, 10, 2, 50, 5000, 1), transactionManager);
+                        displayProperties), transactionManager);
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         compilation = Compilation.builder()
                 .id(1L)

@@ -26,6 +26,7 @@ import ru.practicum.ewm.dto.event.EventInfoDto;
 import ru.practicum.ewm.dto.user.UserShortDto;
 import ru.practicum.ewm.exception.ConflictException;
 import ru.practicum.ewm.exception.NotFoundException;
+import ru.practicum.ewm.exception.ServiceUnavailableException;
 import ru.practicum.ewm.model.EventRequestStatusUpdateRequest;
 import ru.practicum.ewm.model.EventState;
 import ru.practicum.ewm.model.RequestUpdateStatus;
@@ -36,9 +37,11 @@ import java.util.Map;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(classes = RequestServiceApplication.class, properties = {
@@ -222,6 +225,67 @@ class RequestProtocolIntegrationTest {
         assertThat(statistics.getPrepareStatementCount()).isEqualTo(1);
         verify(users).get(1L);
         verifyNoMoreInteractions(users, events);
+    }
+
+    @Test
+    void userOutageMustReadOnlyOwnLocalRequestsWithOneSqlStatement() {
+        doThrow(failure(503)).when(users).get(1L);
+        var statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        statistics.clear();
+
+        var result = assertDoesNotThrow(() -> service.getUserRequests(1L));
+
+        assertThat(result).extracting(request -> request.getId()).containsExactly(100L, 300L);
+        assertThat(result).extracting(request -> request.getRequester()).containsOnly(1L);
+        assertThat(statistics.getPrepareStatementCount()).isEqualTo(1);
+        verify(users).get(1L);
+        verifyNoInteractions(events);
+    }
+
+    @Test
+    void userOutageWithoutOwnRowsMustReturn503InsteadOfEmptySuccessfulList() throws Exception {
+        doThrow(failure(503)).when(users).get(999L);
+
+        mvc.perform(get("/users/999/requests")).andExpect(status().isServiceUnavailable());
+
+        verify(users).get(999L);
+        verifyNoInteractions(events);
+    }
+
+    @Test
+    void participantReadDuringUserOutageMustKeepRealOwnerCheckBeforeSql() {
+        doThrow(failure(503)).when(users).get(99L);
+        var statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        statistics.clear();
+
+        assertThat(assertDoesNotThrow(() -> service.getEventParticipants(99L, 10L))).extracting(request -> request.getId())
+                .containsExactly(100L, 200L);
+        assertThat(statistics.getPrepareStatementCount()).isEqualTo(1);
+        doThrow(failure(503)).when(users).get(1L);
+        statistics.clear();
+        assertThatThrownBy(() -> service.getEventParticipants(1L, 10L)).isInstanceOf(ConflictException.class);
+        assertThat(statistics.getPrepareStatementCount()).isZero();
+        doThrow(failure(503)).when(events).get(10L);
+        assertThatThrownBy(() -> service.getEventParticipants(99L, 10L)).isInstanceOf(ServiceUnavailableException.class);
+        assertThat(statistics.getPrepareStatementCount()).isZero();
+    }
+
+    @Test
+    void definitiveUserErrorsAndMalformedSuccessMustNotFallBackToExistingRows() {
+        var statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        statistics.clear();
+        doThrow(failure(404)).when(users).get(1L);
+        assertThatThrownBy(() -> service.getUserRequests(1L)).isInstanceOf(NotFoundException.class);
+        FeignException forbidden = failure(403);
+        doThrow(forbidden).when(users).get(1L);
+        assertThatThrownBy(() -> service.getUserRequests(1L)).isSameAs(forbidden);
+        DecodeException decode = new DecodeException(200, "Некорректный ответ", request());
+        doThrow(decode).when(users).get(1L);
+        assertThatThrownBy(() -> service.getUserRequests(1L)).isSameAs(decode);
+        doReturn(null).when(users).get(1L);
+        assertThatThrownBy(() -> service.getUserRequests(1L)).isInstanceOf(IllegalStateException.class);
+        assertThat(statistics.getPrepareStatementCount()).isZero();
+        verifyNoInteractions(events);
     }
 
     @Test

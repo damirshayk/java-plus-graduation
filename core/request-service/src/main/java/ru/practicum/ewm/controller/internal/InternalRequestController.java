@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import ru.practicum.ewm.service.ConfirmedRequestCounter;
+import ru.practicum.ewm.service.impl.JpaConfirmedRequestCounter;
 
 import java.util.List;
 import java.util.Map;
@@ -19,7 +19,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 @Validated
 public class InternalRequestController {
-    private final ConfirmedRequestCounter counter;
+    private final JpaConfirmedRequestCounter counter;
 
     @PostMapping("/confirmed-counts")
     public Map<Long, Long> countAll(@Valid @RequestBody @NotNull List<@NotNull @Positive Long> eventIds) {

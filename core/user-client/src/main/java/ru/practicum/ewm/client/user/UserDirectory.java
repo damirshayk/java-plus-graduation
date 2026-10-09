@@ -1,11 +1,9 @@
 package ru.practicum.ewm.client.user;
 
 import feign.FeignException;
-import feign.codec.DecodeException;
 import lombok.RequiredArgsConstructor;
 import ru.practicum.ewm.dto.user.UserShortDto;
-import ru.practicum.ewm.exception.NotFoundException;
-import ru.practicum.ewm.exception.ServiceUnavailableException;
+import ru.practicum.ewm.exception.FeignExceptionMapper;
 
 import java.util.Collection;
 import java.util.HashMap;
@@ -22,7 +20,8 @@ public class UserDirectory {
         try {
             return client.get(id);
         } catch (FeignException exception) {
-            throw translate(exception, "Пользователь с id=" + id + " не найден");
+            throw FeignExceptionMapper.translate(exception, "Сервис пользователей временно недоступен",
+                    "Пользователь с id=" + id + " не найден");
         }
     }
 
@@ -35,7 +34,8 @@ public class UserDirectory {
         try {
             users = client.batch(distinctIds);
         } catch (FeignException exception) {
-            throw translate(exception, "Пользователи не найдены");
+            throw FeignExceptionMapper.translate(exception, "Сервис пользователей временно недоступен",
+                    "Пользователи не найдены");
         }
         Map<Long, UserShortDto> byId = new HashMap<>();
         for (UserShortDto user : users) {
@@ -50,16 +50,4 @@ public class UserDirectory {
         return result;
     }
 
-    private RuntimeException translate(FeignException exception, String notFoundMessage) {
-        if (exception instanceof DecodeException) {
-            return exception;
-        }
-        if (exception.status() == 404) {
-            return new NotFoundException(notFoundMessage);
-        }
-        if (exception.status() == -1 || exception.status() >= 500) {
-            return new ServiceUnavailableException("Сервис пользователей временно недоступен");
-        }
-        return exception;
-    }
 }

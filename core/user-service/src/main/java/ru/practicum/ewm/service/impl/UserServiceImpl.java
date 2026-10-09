@@ -1,6 +1,5 @@
 package ru.practicum.ewm.service.impl;
 
-import feign.FeignException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
@@ -11,16 +10,18 @@ import org.springframework.transaction.annotation.Transactional;
 import ru.practicum.ewm.dto.user.NewUserRequest;
 import ru.practicum.ewm.dto.user.UserDto;
 import ru.practicum.ewm.dto.user.UserShortDto;
-import ru.practicum.ewm.client.UserDataCleanupClient;
+import ru.practicum.ewm.cleanup.CommonCleanupEvent;
+import ru.practicum.ewm.cleanup.CleanupEventType;
+import ru.practicum.ewm.cleanup.SharedOutboxJdbc;
 import ru.practicum.ewm.exception.ConflictException;
 import ru.practicum.ewm.exception.NotFoundException;
-import ru.practicum.ewm.exception.ServiceUnavailableException;
 import ru.practicum.ewm.mapper.UserMapper;
 import ru.practicum.ewm.model.User;
 import ru.practicum.ewm.repository.UserRepository;
 import ru.practicum.ewm.service.UserService;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -30,7 +31,7 @@ public class UserServiceImpl implements UserService {
 
     private final UserRepository userRepository;
     private final UserMapper userMapper;
-    private final UserDataCleanupClient cleanupClient;
+    private final SharedOutboxJdbc outbox;
 
     @Override
     @Transactional
@@ -67,24 +68,17 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    @Transactional
     public void deleteUser(Long userId) {
         log.info("Удаление пользователя с id={}", userId);
 
-        if (!userRepository.existsById(userId)) {
+        if (userRepository.deleteUserById(userId) == 0) {
             throw new NotFoundException(
                     String.format("User with id %d was not found", userId)
             );
         }
 
-        try {
-            cleanupClient.deleteUserData(userId);
-        } catch (FeignException exception) {
-            if (exception.status() == -1 || exception.status() >= 500) {
-                throw new ServiceUnavailableException("Сервис событий временно недоступен");
-            }
-            throw exception;
-        }
-        userRepository.deleteById(userId);
+        outbox.enqueue(new CommonCleanupEvent(UUID.randomUUID(), CleanupEventType.USER_DELETED, userId, List.of()));
         log.info("Пользователь с id={} удален", userId);
     }
 

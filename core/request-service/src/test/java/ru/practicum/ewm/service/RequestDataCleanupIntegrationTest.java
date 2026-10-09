@@ -5,39 +5,39 @@ import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.SpyBean;
-import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.ewm.RequestServiceApplication;
 import ru.practicum.ewm.client.event.EventClient;
 import ru.practicum.ewm.client.user.UserClient;
+import ru.practicum.ewm.cleanup.CleanupEventCodec;
+import ru.practicum.ewm.cleanup.CleanupEventType;
+import ru.practicum.ewm.cleanup.CommonCleanupEvent;
 
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(classes = RequestServiceApplication.class, properties = {
         "spring.datasource.url=jdbc:h2:mem:request-cleanup;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=5000",
         "spring.flyway.enabled=true", "spring.jpa.hibernate.ddl-auto=validate"
 })
-@AutoConfigureMockMvc
 class RequestDataCleanupIntegrationTest {
     @SpyBean
     private JdbcTemplate jdbc;
     @Autowired
-    private MockMvc mvc;
+    private RequestCleanupListener listener;
+    @Autowired
+    private CleanupEventCodec codec;
     @Autowired
     private Flyway flyway;
     @Autowired
@@ -105,17 +105,27 @@ class RequestDataCleanupIntegrationTest {
     }
 
     @Test
-    void invalidBodiesAndNonPositiveUserIdsMustNotWrite() throws Exception {
+    void invalidBodiesAndNonPositiveUserIdsMustNotWrite() {
         for (String body : new String[]{"", "null", "[null]", "[0]", "[-1]", "[10,null]", "{}", "[10,]"}) {
-            mvc.perform(delete("/internal/requests/users/1").contentType(MediaType.APPLICATION_JSON).content(body))
-                    .andExpect(status().isBadRequest());
+            assertThatThrownBy(() -> listener.consume(payload(1L, body))).isInstanceOf(IllegalArgumentException.class);
         }
         for (long id : new long[]{0, -1}) {
-            mvc.perform(delete("/internal/requests/users/{id}", id).contentType(MediaType.APPLICATION_JSON).content("[]"))
-                    .andExpect(status().isBadRequest());
+            assertThatThrownBy(() -> listener.consume(payload(id, "[]"))).isInstanceOf(IllegalArgumentException.class);
         }
         assertThat(ids()).containsExactly(100L, 200L, 300L, 400L);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM request_user_guard", Long.class)).isZero();
+    }
+
+    @Test
+    void duplicateAndReorderedPhasesMustNotUnfreezeOrRestoreData() {
+        String snapshot = payload(1L, "[10]");
+        listener.consume(snapshot);
+        listener.consume(codec.encode(new CommonCleanupEvent(UUID.randomUUID(),
+                CleanupEventType.USER_DELETED, 1L, List.of())));
+        listener.consume(snapshot);
+        assertThat(ids()).containsExactly(300L, 400L);
+        assertThat(deleting("request_event_guard", "event_id", 10L)).isTrue();
+        verifyNoInteractions(users, events);
     }
 
     @Test
@@ -177,8 +187,12 @@ class RequestDataCleanupIntegrationTest {
     }
 
     private void cleanup(Long userId, String body) throws Exception {
-        mvc.perform(delete("/internal/requests/users/{id}", userId).contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isNoContent());
+        listener.consume(payload(userId, body));
+    }
+
+    private String payload(Long userId, String body) {
+        return "{\"eventId\":\"" + UUID.randomUUID() + "\",\"type\":\"USER_EVENTS_DELETED\",\"userId\":"
+                + userId + ",\"eventIds\":" + body + "}";
     }
 
     private List<Long> ids() {

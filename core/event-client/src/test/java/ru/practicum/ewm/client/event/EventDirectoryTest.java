@@ -5,6 +5,8 @@ import feign.Request;
 import feign.Response;
 import feign.codec.DecodeException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import ru.practicum.ewm.dto.event.EventInfoDto;
 import ru.practicum.ewm.exception.NotFoundException;
 import ru.practicum.ewm.exception.ServiceUnavailableException;
@@ -14,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.*;
 
 class EventDirectoryTest {
@@ -38,16 +41,24 @@ class EventDirectoryTest {
     @Test
     void shouldTranslateOnlyConnectionAndServerFailures() {
         for (int status : new int[]{-1, 500, 503}) {
-            doThrow(error(status)).when(client).get(10L);
-            assertThatThrownBy(() -> directory.require(10L)).isInstanceOf(ServiceUnavailableException.class);
+            FeignException failure = error(status);
+            doThrow(failure).when(client).get(10L);
+            ServiceUnavailableException unavailable = assertThrows(ServiceUnavailableException.class,
+                    () -> directory.require(10L));
+            assertThat(unavailable.getCause()).isSameAs(failure);
         }
     }
 
-    @Test
-    void shouldPreserveDecodeAndProgrammingErrors() {
-        DecodeException decode = new DecodeException(200, "Некорректный ответ", request());
+    @ParameterizedTest
+    @ValueSource(ints = {-1, 200, 404, 500})
+    void shouldPreserveDecodeErrorsRegardlessOfStatus(int status) {
+        DecodeException decode = new DecodeException(status, "Некорректный ответ", request());
         when(client.get(10L)).thenThrow(decode);
         assertThatThrownBy(() -> directory.require(10L)).isSameAs(decode);
+    }
+
+    @Test
+    void shouldPreserveProgrammingErrors() {
         IllegalStateException programming = new IllegalStateException("Ошибка клиента");
         doThrow(programming).when(client).get(10L);
         assertThatThrownBy(() -> directory.require(10L)).isSameAs(programming);

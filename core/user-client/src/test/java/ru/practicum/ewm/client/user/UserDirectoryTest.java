@@ -6,6 +6,8 @@ import feign.Response;
 import feign.codec.DecodeException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import ru.practicum.ewm.dto.user.UserShortDto;
 import ru.practicum.ewm.exception.NotFoundException;
 import ru.practicum.ewm.exception.ServiceUnavailableException;
@@ -16,6 +18,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -68,17 +71,22 @@ class UserDirectoryTest {
 
     @Test
     void shouldTranslateConnectionFailureToUnavailable() {
-        when(client.get(9L)).thenThrow(error(-1));
+        FeignException failure = error(-1);
+        when(client.get(9L)).thenThrow(failure);
 
-        assertThatThrownBy(() -> directory.require(9L)).isInstanceOf(ServiceUnavailableException.class);
+        ServiceUnavailableException unavailable = assertThrows(ServiceUnavailableException.class,
+                () -> directory.require(9L));
+        assertThat(unavailable.getCause()).isSameAs(failure);
     }
 
     @Test
     void shouldTranslateServerFailureToUnavailable() {
-        when(client.batch(List.of(9L))).thenThrow(error(503));
+        FeignException failure = error(503);
+        when(client.batch(List.of(9L))).thenThrow(failure);
 
-        assertThatThrownBy(() -> directory.findAll(List.of(9L)))
-                .isInstanceOf(ServiceUnavailableException.class);
+        ServiceUnavailableException unavailable = assertThrows(ServiceUnavailableException.class,
+                () -> directory.findAll(List.of(9L)));
+        assertThat(unavailable.getCause()).isSameAs(failure);
     }
 
     @Test
@@ -96,11 +104,24 @@ class UserDirectoryTest {
         assertThatThrownBy(() -> directory.require(9L)).isSameAs(failure);
     }
 
-    @Test
-    void shouldPreserveDecodeErrors() {
-        DecodeException failure = new DecodeException(200, "Некорректный ответ", request());
+    @ParameterizedTest
+    @ValueSource(ints = {-1, 200, 404, 500})
+    void shouldPreserveDecodeErrorsRegardlessOfStatus(int status) {
+        DecodeException failure = new DecodeException(status, "Некорректный ответ", request());
+        when(client.get(9L)).thenThrow(failure);
         when(client.batch(List.of(9L))).thenThrow(failure);
 
+        assertThatThrownBy(() -> directory.require(9L)).isSameAs(failure);
+        assertThatThrownBy(() -> directory.findAll(List.of(9L))).isSameAs(failure);
+    }
+
+    @Test
+    void shouldPreserveProgrammingErrors() {
+        IllegalStateException failure = new IllegalStateException("Ошибка клиента");
+        when(client.get(9L)).thenThrow(failure);
+        when(client.batch(List.of(9L))).thenThrow(failure);
+
+        assertThatThrownBy(() -> directory.require(9L)).isSameAs(failure);
         assertThatThrownBy(() -> directory.findAll(List.of(9L))).isSameAs(failure);
     }
 

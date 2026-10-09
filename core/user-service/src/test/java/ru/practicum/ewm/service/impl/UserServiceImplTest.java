@@ -1,8 +1,5 @@
 package ru.practicum.ewm.service.impl;
 
-import feign.FeignException;
-import feign.Request;
-import feign.Response;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -17,19 +14,18 @@ import org.springframework.data.domain.Sort;
 import ru.practicum.ewm.dto.user.NewUserRequest;
 import ru.practicum.ewm.dto.user.UserDto;
 import ru.practicum.ewm.dto.user.UserShortDto;
-import ru.practicum.ewm.client.UserDataCleanupClient;
+import ru.practicum.ewm.cleanup.CleanupEventType;
+import ru.practicum.ewm.cleanup.SharedOutboxJdbc;
 import ru.practicum.ewm.exception.ConflictException;
 import ru.practicum.ewm.exception.NotFoundException;
-import ru.practicum.ewm.exception.ServiceUnavailableException;
 import ru.practicum.ewm.mapper.UserMapper;
 import ru.practicum.ewm.model.User;
 import ru.practicum.ewm.repository.UserRepository;
 
 import java.util.List;
-import java.util.Map;
-import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -44,7 +40,7 @@ class UserServiceImplTest {
     private UserMapper userMapper;
 
     @Mock
-    private UserDataCleanupClient cleanupClient;
+    private SharedOutboxJdbc outbox;
 
     @InjectMocks
     private UserServiceImpl userService;
@@ -181,73 +177,43 @@ class UserServiceImplTest {
 
     @Test
     void shouldDeleteUser() {
-        when(userRepository.existsById(1L)).thenReturn(true);
-        doNothing().when(userRepository).deleteById(1L);
+        when(userRepository.deleteUserById(1L)).thenReturn(1);
 
         userService.deleteUser(1L);
 
-        InOrder order = inOrder(userRepository, cleanupClient);
-        order.verify(userRepository).existsById(1L);
-        order.verify(cleanupClient).deleteUserData(1L);
-        order.verify(userRepository).deleteById(1L);
+        InOrder order = inOrder(userRepository, outbox);
+        order.verify(userRepository).deleteUserById(1L);
+        order.verify(outbox).enqueue(argThat(event -> event.userId().equals(1L)
+                && event.type() == CleanupEventType.USER_DELETED && event.eventIds().isEmpty()));
+        verifyNoMoreInteractions(userRepository);
     }
 
     @Test
     void shouldThrowNotFoundExceptionWhenDeletingNonExistingUser() {
-        when(userRepository.existsById(99L)).thenReturn(false);
+        when(userRepository.deleteUserById(99L)).thenReturn(0);
 
         assertThatThrownBy(() -> userService.deleteUser(99L))
                 .isInstanceOf(NotFoundException.class)
                 .hasMessageContaining("User with id 99 was not found");
 
-        verify(userRepository, never()).deleteById(anyLong());
-        verifyNoInteractions(cleanupClient);
+        verifyNoInteractions(outbox);
     }
 
     @Test
-    void shouldRetainUserWhenCleanupIsUnavailable() {
-        when(userRepository.existsById(1L)).thenReturn(true);
-        doThrow(cleanupError(503)).when(cleanupClient).deleteUserData(1L);
+    void shouldDeleteUserWithoutHttpWhenCleanupIsUnavailable() {
+        when(userRepository.deleteUserById(1L)).thenReturn(1);
+        assertThatCode(() -> userService.deleteUser(1L)).doesNotThrowAnyException();
 
-        assertThatThrownBy(() -> userService.deleteUser(1L))
-                .isInstanceOf(ServiceUnavailableException.class);
-
-        verify(userRepository, never()).deleteById(anyLong());
-        verify(cleanupClient).deleteUserData(1L);
+        verify(userRepository).deleteUserById(1L);
+        verify(outbox).enqueue(any());
     }
 
     @Test
-    void shouldRetainUserWhenCleanupConnectionFails() {
-        when(userRepository.existsById(1L)).thenReturn(true);
-        doThrow(cleanupError(-1)).when(cleanupClient).deleteUserData(1L);
+    void outboxFailureMustPropagateToRollbackLocalDeletion() {
+        when(userRepository.deleteUserById(1L)).thenReturn(1);
+        doThrow(new IllegalStateException("Не удалось сохранить уведомление")).when(outbox).enqueue(any());
 
-        assertThatThrownBy(() -> userService.deleteUser(1L))
-                .isInstanceOf(ServiceUnavailableException.class);
-
-        verify(userRepository, never()).deleteById(anyLong());
-    }
-
-    @Test
-    void shouldPropagateOtherCleanupErrors() {
-        when(userRepository.existsById(1L)).thenReturn(true);
-        FeignException failure = cleanupError(400);
-        doThrow(failure).when(cleanupClient).deleteUserData(1L);
-
-        assertThatThrownBy(() -> userService.deleteUser(1L)).isSameAs(failure);
-        verify(userRepository, never()).deleteById(anyLong());
-    }
-
-    @Test
-    void shouldAllowExplicitRetryAfterCleanupFailure() {
-        when(userRepository.existsById(1L)).thenReturn(true);
-        doThrow(cleanupError(503)).doNothing().when(cleanupClient).deleteUserData(1L);
-
-        assertThatThrownBy(() -> userService.deleteUser(1L))
-                .isInstanceOf(ServiceUnavailableException.class);
-        userService.deleteUser(1L);
-
-        verify(cleanupClient, times(2)).deleteUserData(1L);
-        verify(userRepository).deleteById(1L);
+        assertThatThrownBy(() -> userService.deleteUser(1L)).isInstanceOf(IllegalStateException.class);
     }
 
     @Test
@@ -340,10 +306,4 @@ class UserServiceImplTest {
         assertThat(result.getName()).isEqualTo("Test User With Spaces");
     }
 
-    private FeignException cleanupError(int status) {
-        Request request = Request.create(Request.HttpMethod.DELETE,
-                "http://event-service/internal/users/1/data", Map.of(), null, StandardCharsets.UTF_8, null);
-        return FeignException.errorStatus("UserDataCleanupClient#deleteUserData", Response.builder()
-                .status(status).reason("Ошибка").headers(Map.of()).request(request).build());
-    }
 }
