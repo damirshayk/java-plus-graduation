@@ -1,7 +1,9 @@
 package ru.practicum.ewm;
 
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.cloud.client.ServiceInstance;
 import org.springframework.cloud.client.loadbalancer.LoadBalancerClient;
@@ -32,33 +34,50 @@ public class StatsClient {
     private final String serviceId;
     private final LoadBalancerClient loadBalancerClient;
     private final RetryTemplate discoveryRetry;
+    private final CircuitBreaker circuitBreaker;
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     public StatsClient(
-            @Value("${stats.service-id:stats-server}") String serviceId,
+            StatsClientProperties properties,
             LoadBalancerClient loadBalancerClient,
             RestTemplateBuilder restTemplateBuilder
     ) {
-        this.serviceId = serviceId;
+        this.serviceId = properties.getServiceId();
         this.loadBalancerClient = loadBalancerClient;
+        StatsClientProperties.Discovery discovery = properties.getDiscovery();
+        StatsClientProperties.Http http = properties.getHttp();
+        StatsClientProperties.CircuitBreaker protection = properties.getCircuitBreaker();
         this.discoveryRetry = RetryTemplate.builder()
-                .maxAttempts(3)
-                .fixedBackoff(1000)
+                .maxAttempts(discovery.getMaxAttempts())
+                .fixedBackoff(discovery.getBackoffMs())
                 .retryOn(NoStatsInstanceException.class)
                 .build();
         this.rest = restTemplateBuilder
-                .setConnectTimeout(Duration.ofSeconds(1))
-                .setReadTimeout(Duration.ofSeconds(2))
+                .setConnectTimeout(Duration.ofMillis(http.getConnectTimeoutMs()))
+                .setReadTimeout(Duration.ofMillis(http.getReadTimeoutMs()))
                 .build();
+        this.circuitBreaker = CircuitBreaker.of("stats", CircuitBreakerConfig.custom()
+                .slidingWindowSize(protection.getSlidingWindowSize())
+                .minimumNumberOfCalls(protection.getMinimumNumberOfCalls())
+                .failureRateThreshold(protection.getFailureRateThreshold())
+                .waitDurationInOpenState(Duration.ofMillis(protection.getWaitDurationInOpenStateMs()))
+                .permittedNumberOfCallsInHalfOpenState(protection.getPermittedNumberOfCallsInHalfOpenState())
+                .recordException(this::isUnavailable)
+                .ignoreException(exception -> !isUnavailable(exception))
+                .build());
     }
 
     // POST /hit - отправка статистики
     public void hit(EndpointHitRequestDto requestDto) {
         try {
-            URI uri = UriComponentsBuilder.fromUri(resolveServiceUri()).path("/hit").build().toUri();
-            rest.postForEntity(uri, requestDto, Void.class);
-            log.debug("Статистика отправлена: {}", requestDto);
-        } catch (NoStatsInstanceException | ResourceAccessException | HttpServerErrorException exception) {
+            CircuitBreaker.decorateSupplier(circuitBreaker, () -> {
+                URI uri = UriComponentsBuilder.fromUri(resolveServiceUri()).path("/hit").build().toUri();
+                rest.postForEntity(uri, requestDto, Void.class);
+                log.debug("Статистика отправлена: {}", requestDto);
+                return null;
+            }).get();
+        } catch (NoStatsInstanceException | ResourceAccessException | HttpServerErrorException
+                 | CallNotPermittedException exception) {
             logUnavailable("POST /hit", exception);
         }
     }
@@ -71,21 +90,29 @@ public class StatsClient {
             Boolean unique
     ) {
         try {
-            URI uri = buildStatsUri(start, end, uris, unique);
+            return CircuitBreaker.decorateSupplier(circuitBreaker, () -> {
+                URI uri = buildStatsUri(start, end, uris, unique);
 
-            ResponseEntity<List<ViewStats>> response = rest.exchange(
-                    uri,
-                    HttpMethod.GET,
-                    null,
-                    new ParameterizedTypeReference<List<ViewStats>>() {
-                    }
-            );
+                ResponseEntity<List<ViewStats>> response = rest.exchange(
+                        uri,
+                        HttpMethod.GET,
+                        null,
+                        new ParameterizedTypeReference<List<ViewStats>>() {
+                        }
+                );
 
-            return response.getBody() != null ? response.getBody() : Collections.emptyList();
-        } catch (NoStatsInstanceException | ResourceAccessException | HttpServerErrorException exception) {
+                return response.getBody() != null ? response.getBody() : Collections.<ViewStats>emptyList();
+            }).get();
+        } catch (NoStatsInstanceException | ResourceAccessException | HttpServerErrorException
+                 | CallNotPermittedException exception) {
             logUnavailable("GET /stats", exception);
             return Collections.emptyList();
         }
+    }
+
+    private boolean isUnavailable(Throwable exception) {
+        return exception instanceof NoStatsInstanceException || exception instanceof ResourceAccessException
+                || exception instanceof HttpServerErrorException;
     }
 
     private URI resolveServiceUri() {

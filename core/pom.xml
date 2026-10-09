@@ -11,8 +11,19 @@
 
     <artifactId>core</artifactId>
 
+    <properties>
+        <mapstruct.version>1.5.5.Final</mapstruct.version>
+    </properties>
+
     <modules>
-        <module>main-service</module>
+        <module>api-errors</module>
+        <module>cleanup-events</module>
+        <module>user-client</module>
+        <module>event-client</module>
+        <module>user-service</module>
+        <module>event-service</module>
+        <module>request-service</module>
+        <module>comment-service</module>
     </modules>
 
     <packaging>pom</packaging>

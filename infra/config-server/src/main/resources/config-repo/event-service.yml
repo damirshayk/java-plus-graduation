@@ -1,0 +1,66 @@
+server:
+  port: 0
+  forward-headers-strategy: native
+
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    producer:
+      properties:
+        max.block.ms: 3000
+        request.timeout.ms: 3000
+        delivery.timeout.ms: 10000
+    consumer:
+      properties:
+        max.poll.records: 50
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:file:./data/events;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+  flyway:
+    locations: classpath:db/event-migration
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  sql:
+    init:
+      mode: never
+
+ewm:
+  cleanup:
+    topic: ewm.user-data-cleanup.v1
+    publisher-enabled: true
+    relay-enabled: true
+    listener-enabled: true
+    batch-size: 50
+    relay-delay-ms: 1000
+    send-timeout-ms: 12000
+    retry-backoff-ms: 1000
+  events:
+    min-start-delay-hours: 2
+  display:
+    retry:
+      max-attempts: 2
+      backoff-ms: 100
+    circuit-breaker:
+      sliding-window-size: 10
+      minimum-number-of-calls: 2
+      failure-rate-threshold: 50
+      wait-duration-in-open-state-ms: 5000
+      permitted-number-of-calls-in-half-open-state: 1
+
+stats:
+  service-id: stats-server
+  discovery:
+    max-attempts: 2
+    backoff-ms: 100
+  http:
+    connect-timeout-ms: 1000
+    read-timeout-ms: 2000
+  circuit-breaker:
+    sliding-window-size: 10
+    minimum-number-of-calls: 1
+    failure-rate-threshold: 50
+    wait-duration-in-open-state-ms: 5000
+    permitted-number-of-calls-in-half-open-state: 1

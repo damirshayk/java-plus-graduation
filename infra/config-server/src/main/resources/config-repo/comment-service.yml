@@ -1,0 +1,44 @@
+server:
+  port: 0
+  forward-headers-strategy: native
+
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    consumer:
+      properties:
+        max.poll.records: 50
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:file:./data/comments;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    locations: classpath:db/comment-migration
+  sql:
+    init:
+      mode: never
+  cloud:
+    loadbalancer:
+      retry:
+        enabled: true
+        retry-on-all-operations: false
+        max-retries-on-same-service-instance: 0
+        max-retries-on-next-service-instance: 1
+        retryable-status-codes: [500, 502, 503, 504]
+        backoff:
+          min-backoff: 100ms
+
+ewm:
+  cleanup:
+    topic: ewm.user-data-cleanup.v1
+    publisher-enabled: false
+    relay-enabled: false
+    listener-enabled: true
+    retry-backoff-ms: 1000
+  event-service-id: event-service
+  read-retry:
+    enabled: true

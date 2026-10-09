@@ -1,0 +1,13 @@
+spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 1000
+            readTimeout: 2000
+    loadbalancer:
+      cache:
+        enabled: false
+  jackson:
+    default-property-inclusion: always

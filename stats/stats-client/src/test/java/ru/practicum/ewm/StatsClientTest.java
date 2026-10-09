@@ -14,7 +14,9 @@ import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.test.context.support.TestPropertySourceUtils;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.client.ExpectedCount;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.HttpClientErrorException;
@@ -29,6 +31,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -46,23 +49,11 @@ class StatsClientTest {
     private AnnotationConfigApplicationContext context;
     private MockRestServiceServer server;
     private StatsClient client;
+    private SimpleClientHttpRequestFactory requestFactory;
 
     @BeforeEach
     void setUp() {
-        discoveryClient = mock(DiscoveryClient.class);
-        context = new AnnotationConfigApplicationContext();
-        TestPropertySourceUtils.addInlinedPropertiesToEnvironment(context,
-                "spring.cloud.loadbalancer.cache.enabled=false");
-        context.registerBean(DiscoveryClient.class, () -> discoveryClient);
-        context.registerBean(LoadBalancerClientFactory.class,
-                () -> new LoadBalancerClientFactory(new LoadBalancerClientsProperties()));
-        context.registerBean(LoadBalancerClient.class,
-                () -> new BlockingLoadBalancerClient(context.getBean(LoadBalancerClientFactory.class)));
-        context.registerBean(RestTemplateBuilder.class, () -> new RestTemplateBuilder()
-                .additionalCustomizers(rest -> server = MockRestServiceServer.bindTo(rest).build()));
-        context.register(StatsClient.class);
-        context.refresh();
-        client = context.getBean(StatsClient.class);
+        setUpClient(1);
     }
 
     @AfterEach
@@ -273,11 +264,200 @@ class StatsClientTest {
         LoadBalancerClient failingBalancer = mock(LoadBalancerClient.class);
         IllegalStateException failure = new IllegalStateException("Ошибка выбора экземпляра");
         when(failingBalancer.choose("stats-server")).thenThrow(failure);
-        StatsClient failingClient = new StatsClient("stats-server", failingBalancer, new RestTemplateBuilder());
+        ReflectionTestUtils.setField(client, "loadBalancerClient", failingBalancer);
 
-        assertEquals(failure, assertThrows(IllegalStateException.class, () -> failingClient.hit(hitRequest())));
+        assertEquals(failure, assertThrows(IllegalStateException.class, () -> client.hit(hitRequest())));
 
         verify(failingBalancer).choose("stats-server");
+    }
+
+    @Test
+    void configuredTimeoutsAreAppliedToRequestFactory() {
+        assertEquals(11, ReflectionTestUtils.getField(requestFactory, "connectTimeout"));
+        assertEquals(22, ReflectionTestUtils.getField(requestFactory, "readTimeout"));
+    }
+
+    @Test
+    void hitFailureOpensSharedCircuitAndStatsSkipsDiscoveryAndHttp() {
+        useAvailableInstance();
+        server.expect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+        assertEquals(List.of(), requestStats());
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+
+        verify(discoveryClient).getInstances("stats-server");
+        server.verify();
+        assertCircuitState("OPEN");
+    }
+
+    @Test
+    void missingDiscoveryInstanceOpensSharedCircuitAfterLimitedAttempts() {
+        when(discoveryClient.getInstances("stats-server")).thenReturn(List.of());
+
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+        assertEquals(List.of(), requestStats());
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+
+        verify(discoveryClient, times(3)).getInstances("stats-server");
+        server.verify();
+        assertCircuitState("OPEN");
+    }
+
+    @Test
+    void mixedOperationsShareCircuitFailureWindow() {
+        setUpClient(2);
+        useAvailableInstance();
+        server.expect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        server.expect(method(HttpMethod.GET))
+                .andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR));
+
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+        assertEquals(List.of(), requestStats());
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+        assertEquals(List.of(), requestStats());
+
+        verify(discoveryClient, times(2)).getInstances("stats-server");
+        server.verify();
+        assertCircuitState("OPEN");
+    }
+
+    @Test
+    void discoveryRetriesCountAsOneCircuitFailure() {
+        setUpClient(2);
+        when(discoveryClient.getInstances("stats-server")).thenReturn(List.of());
+
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+        verify(discoveryClient, times(3)).getInstances("stats-server");
+        assertEquals(List.of(), requestStats());
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+        assertEquals(List.of(), requestStats());
+
+        verify(discoveryClient, times(6)).getInstances("stats-server");
+        server.verify();
+        assertCircuitState("OPEN");
+        assertCircuitMetrics(2, 2);
+    }
+
+    @Test
+    void clientAndDecodeErrorsAreIgnoredByCircuit() {
+        useAvailableInstance();
+        server.expect(method(HttpMethod.POST)).andRespond(withStatus(HttpStatus.BAD_REQUEST));
+        server.expect(method(HttpMethod.GET)).andRespond(withStatus(HttpStatus.BAD_REQUEST));
+        server.expect(method(HttpMethod.GET))
+                .andRespond(withSuccess("not-json", MediaType.APPLICATION_JSON));
+        server.expect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        [{"app":"main-service","uri":"/events/1","hits":2}]
+                        """, MediaType.APPLICATION_JSON));
+
+        assertThrows(HttpClientErrorException.class, () -> client.hit(hitRequest()));
+        assertThrows(HttpClientErrorException.class, this::requestStats);
+        assertThrows(RestClientException.class, this::requestStats);
+
+        assertCircuitState("CLOSED");
+        assertCircuitMetrics(0, 0);
+        assertEquals(List.of(new ViewStats("main-service", "/events/1", 2L)), requestStats());
+        verify(discoveryClient, times(4)).getInstances("stats-server");
+        server.verify();
+    }
+
+    @Test
+    void successfulHalfOpenRequestRestoresStatsClient() {
+        useAvailableInstance();
+        server.expect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        server.expect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        [{"app":"main-service","uri":"/events/1","hits":2}]
+                        """, MediaType.APPLICATION_JSON));
+        server.expect(method(HttpMethod.POST)).andRespond(withSuccess());
+
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+        assertCircuitState("OPEN");
+        ReflectionTestUtils.invokeMethod(circuitBreaker(), "transitionToHalfOpenState");
+        assertCircuitState("HALF_OPEN");
+        assertEquals(List.of(new ViewStats("main-service", "/events/1", 2L)), requestStats());
+        assertCircuitState("CLOSED");
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+
+        verify(discoveryClient, times(3)).getInstances("stats-server");
+        server.verify();
+    }
+
+    @Test
+    void failedHalfOpenRequestReopensCircuitWithoutResendingHit() {
+        useAvailableInstance();
+        server.expect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        server.expect(method(HttpMethod.POST))
+                .andRespond(withException(new SocketTimeoutException("Таймаут ответа")));
+
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+        assertCircuitState("OPEN");
+        ReflectionTestUtils.invokeMethod(circuitBreaker(), "transitionToHalfOpenState");
+        assertDoesNotThrow(() -> client.hit(hitRequest()));
+        assertEquals(List.of(), requestStats());
+
+        verify(discoveryClient, times(2)).getInstances("stats-server");
+        server.verify();
+        assertCircuitState("OPEN");
+    }
+
+    private void setUpClient(int minimumNumberOfCalls) {
+        if (context != null) {
+            context.close();
+        }
+        discoveryClient = mock(DiscoveryClient.class);
+        requestFactory = new SimpleClientHttpRequestFactory();
+        context = new AnnotationConfigApplicationContext();
+        TestPropertySourceUtils.addInlinedPropertiesToEnvironment(context,
+                "spring.cloud.loadbalancer.cache.enabled=false",
+                "stats.discovery.max-attempts=3",
+                "stats.discovery.backoff-ms=1",
+                "stats.http.connect-timeout-ms=11",
+                "stats.http.read-timeout-ms=22",
+                "stats.circuit-breaker.sliding-window-size=2",
+                "stats.circuit-breaker.minimum-number-of-calls=" + minimumNumberOfCalls,
+                "stats.circuit-breaker.failure-rate-threshold=100",
+                "stats.circuit-breaker.wait-duration-in-open-state-ms=5000",
+                "stats.circuit-breaker.permitted-number-of-calls-in-half-open-state=1");
+        context.registerBean(DiscoveryClient.class, () -> discoveryClient);
+        context.registerBean(LoadBalancerClientFactory.class,
+                () -> new LoadBalancerClientFactory(new LoadBalancerClientsProperties()));
+        context.registerBean(LoadBalancerClient.class,
+                () -> new BlockingLoadBalancerClient(context.getBean(LoadBalancerClientFactory.class)));
+        context.registerBean(RestTemplateBuilder.class, () -> new RestTemplateBuilder()
+                .requestFactory(() -> requestFactory)
+                .additionalCustomizers(rest -> server = MockRestServiceServer.bindTo(rest).build()));
+        context.register(StatsClientConfiguration.class, StatsClient.class);
+        context.refresh();
+        client = context.getBean(StatsClient.class);
+    }
+
+    private Object circuitBreaker() {
+        Object circuitBreaker = assertDoesNotThrow(
+                () -> ReflectionTestUtils.getField(client, "circuitBreaker"),
+                "У клиента должен быть общий Circuit Breaker");
+        assertNotNull(circuitBreaker);
+        return circuitBreaker;
+    }
+
+    private void assertCircuitState(String expectedState) {
+        Object actualState = ReflectionTestUtils.invokeMethod(circuitBreaker(), "getState");
+        assertNotNull(actualState);
+        assertEquals(expectedState, actualState.toString());
+    }
+
+    private void assertCircuitMetrics(int expectedFailedCalls, int expectedBufferedCalls) {
+        Object metrics = ReflectionTestUtils.invokeMethod(circuitBreaker(), "getMetrics");
+        assertNotNull(metrics);
+        Object failedCalls = ReflectionTestUtils.invokeMethod(metrics, "getNumberOfFailedCalls");
+        Object bufferedCalls = ReflectionTestUtils.invokeMethod(metrics, "getNumberOfBufferedCalls");
+        assertEquals(expectedFailedCalls, failedCalls);
+        assertEquals(expectedBufferedCalls, bufferedCalls);
     }
 
     private void useAvailableInstance() {

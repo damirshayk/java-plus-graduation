@@ -2,8 +2,6 @@ server:
   port: 0
 
 spring:
-  jackson:
-    default-property-inclusion: always
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:stats;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
     username: ${SPRING_DATASOURCE_USERNAME:sa}
