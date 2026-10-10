@@ -26,7 +26,3 @@ spring:
           uri: lb://event-service
           predicates:
             - Path=/admin/**,/users/**,/events/**,/categories/**,/compilations/**
-        - id: stats-server
-          uri: lb://stats-server
-          predicates:
-            - Path=/hit,/stats

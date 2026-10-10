@@ -27,4 +27,8 @@ public interface EventService {
                                         boolean isOnlyAvailable, EventSort sort, int from, int size);
 
     EventFullDto getPublicEvent(Long eventId);
+
+    List<EventShortDto> getRecommendations(Long userId, int size);
+
+    void validateLike(Long userId, Long eventId);
 }

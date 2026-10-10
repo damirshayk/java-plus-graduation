@@ -39,16 +39,10 @@ class NativeConfigRepositoryTest {
         assertEquals("classpath:db/event-migration", properties.get("spring.flyway.locations"));
         assertEquals("validate", properties.get("spring.jpa.hibernate.ddl-auto"));
         assertEquals(false, properties.get("spring.jpa.open-in-view"));
-        assertEquals("stats-server", properties.get("stats.service-id"));
-        assertEquals(2, properties.get("stats.discovery.max-attempts"));
-        assertEquals(100, properties.get("stats.discovery.backoff-ms"));
-        assertEquals(1000, properties.get("stats.http.connect-timeout-ms"));
-        assertEquals(2000, properties.get("stats.http.read-timeout-ms"));
-        assertEquals(10, properties.get("stats.circuit-breaker.sliding-window-size"));
-        assertEquals(1, properties.get("stats.circuit-breaker.minimum-number-of-calls"));
-        assertEquals(50, properties.get("stats.circuit-breaker.failure-rate-threshold"));
-        assertEquals(5000, properties.get("stats.circuit-breaker.wait-duration-in-open-state-ms"));
-        assertEquals(1, properties.get("stats.circuit-breaker.permitted-number-of-calls-in-half-open-state"));
+        assertFalse(properties.containsKey("stats.service-id"));
+        assertEquals(1000, properties.get("stats.client.timeout-ms"));
+        assertEquals("discovery:///collector", properties.get("grpc.client.collector.address"));
+        assertEquals("discovery:///analyzer", properties.get("grpc.client.analyzer.address"));
         assertEquals(2, properties.get("ewm.display.retry.max-attempts"));
         assertEquals(100, properties.get("ewm.display.retry.backoff-ms"));
         assertEquals(10, properties.get("ewm.display.circuit-breaker.sliding-window-size"));
@@ -65,15 +59,32 @@ class NativeConfigRepositoryTest {
     }
 
     @Test
-    void statsServerConfigurationIsLoadedFromFlatRepository() {
-        Map<?, ?> properties = findServiceProperties("stats-server");
-
+    void analyzerConfigurationHasOwnDatabaseAndRecommendationLimits() {
+        Map<?, ?> properties = findServiceProperties("analyzer");
         assertEquals(0, properties.get("server.port"));
-        assertEquals("always", properties.get("spring.jackson.default-property-inclusion"));
-        assertTrue(properties.get("spring.datasource.url").toString().contains("mem:stats"));
-        assertFalse(properties.containsKey("stats.service-id"));
-        assertFalse(properties.containsKey("ewm.events.min-start-delay-hours"));
+        assertEquals(0, properties.get("grpc.server.port"));
+        assertTrue(properties.get("spring.datasource.url").toString().contains("ewm_analyzer"));
+        assertEquals("classpath:db/analyzer-migration", properties.get("spring.flyway.locations"));
+        assertEquals(10, properties.get("stats.recommendations.history-size"));
+        assertEquals(5, properties.get("stats.recommendations.neighbors-size"));
+        assertEquals(false, properties.get("spring.kafka.consumer.enable-auto-commit"));
         assertFalse(properties.containsKey("spring.cloud.gateway.routes[0].uri"));
+    }
+
+    @Test
+    void collectorAndAggregatorHaveSeparateKafkaWireTypes() {
+        Map<?, ?> collector = findServiceProperties("collector");
+        Map<?, ?> aggregator = findServiceProperties("aggregator");
+        assertEquals(0, collector.get("grpc.server.port"));
+        assertEquals("org.apache.kafka.common.serialization.LongSerializer",
+                collector.get("spring.kafka.producer.key-serializer"));
+        assertEquals("org.apache.kafka.common.serialization.StringSerializer",
+                aggregator.get("spring.kafka.producer.key-serializer"));
+        assertEquals("aggregator", aggregator.get("spring.kafka.consumer.group-id"));
+        assertEquals("manual_immediate", aggregator.get("spring.kafka.listener.ack-mode"));
+        assertEquals(1, aggregator.get("spring.kafka.listener.concurrency"));
+        assertFalse(collector.containsKey("spring.datasource.url"));
+        assertFalse(aggregator.containsKey("spring.datasource.url"));
     }
 
     @Test
@@ -92,10 +103,7 @@ class NativeConfigRepositoryTest {
                 properties.get("spring.cloud.gateway.routes[2].predicates[0]"));
         assertEquals("event-service", properties.get("spring.cloud.gateway.routes[3].id"));
         assertEquals("lb://event-service", properties.get("spring.cloud.gateway.routes[3].uri"));
-        assertEquals("stats-server", properties.get("spring.cloud.gateway.routes[4].id"));
-        assertEquals("lb://stats-server", properties.get("spring.cloud.gateway.routes[4].uri"));
-        assertEquals("Path=/hit,/stats", properties.get("spring.cloud.gateway.routes[4].predicates[0]"));
-        assertFalse(properties.containsKey("spring.cloud.gateway.routes[5].id"));
+        assertFalse(properties.containsKey("spring.cloud.gateway.routes[4].id"));
         assertFalse(properties.get("spring.cloud.gateway.routes[3].predicates[0]").toString().contains("/internal"));
         assertFalse(properties.get("spring.cloud.gateway.routes[2].predicates[0]").toString().contains("/internal"));
         assertFalse(properties.get("spring.cloud.gateway.routes[1].predicates[0]").toString().contains("/internal"));
@@ -225,11 +233,17 @@ class NativeConfigRepositoryTest {
 
     private void assertSharedClientDefaults(PropertySource source) {
         assertTrue(source.getName().contains("config-repo/application.yml"));
-        assertEquals(Map.of(
-                "spring.cloud.openfeign.client.config.default.connectTimeout", 1000,
-                "spring.cloud.openfeign.client.config.default.readTimeout", 2000,
-                "spring.cloud.loadbalancer.cache.enabled", false,
-                "spring.jackson.default-property-inclusion", "always"
-        ), source.getSource());
+        Map<?, ?> properties = source.getSource();
+        assertEquals(1000, properties.get("spring.cloud.openfeign.client.config.default.connectTimeout"));
+        assertEquals(2000, properties.get("spring.cloud.openfeign.client.config.default.readTimeout"));
+        assertEquals(false, properties.get("spring.cloud.loadbalancer.cache.enabled"));
+        assertEquals("always", properties.get("spring.jackson.default-property-inclusion"));
+        assertEquals("stats.user-actions.v1", properties.get("stats.kafka.topics.user-actions"));
+        assertEquals("stats.events-similarity.v1", properties.get("stats.kafka.topics.events-similarity"));
+        assertEquals(0.4, properties.get("stats.weights.view"));
+        assertEquals(0.8, properties.get("stats.weights.register"));
+        assertEquals(1.0, properties.get("stats.weights.like"));
+        assertFalse(properties.containsKey("spring.datasource.url"));
+        assertFalse(properties.containsKey("spring.kafka.producer.value-serializer"));
     }
 }

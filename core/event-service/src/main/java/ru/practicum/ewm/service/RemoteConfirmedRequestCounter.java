@@ -16,6 +16,19 @@ public class RemoteConfirmedRequestCounter implements ConfirmedRequestCounter {
     private final RequestClient client;
 
     @Override
+    public boolean hasConfirmedRequest(Long userId, Long eventId) {
+        try {
+            Boolean confirmed = client.hasConfirmedRequest(userId, eventId);
+            if (confirmed == null) {
+                throw new IllegalStateException("Сервис заявок не вернул результат проверки участия");
+            }
+            return confirmed;
+        } catch (FeignException exception) {
+            throw FeignExceptionMapper.translate(exception, "Сервис заявок временно недоступен");
+        }
+    }
+
+    @Override
     public long count(Long eventId) {
         return countAll(List.of(eventId)).getOrDefault(eventId, 0L);
     }

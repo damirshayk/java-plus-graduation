@@ -7,16 +7,17 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.aop.framework.ProxyFactory;
-import org.springframework.boot.web.client.RestTemplateBuilder;
-import org.springframework.cloud.client.loadbalancer.LoadBalancerClient;
 import org.springframework.http.MediaType;
-import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.MethodValidationInterceptor;
-import ru.practicum.ewm.EndpointHitRequestDto;
-import ru.practicum.ewm.StatsClient;
-import ru.practicum.ewm.StatsClientProperties;
+import ru.practicum.ewm.stats.client.CollectorClient;
+import ru.practicum.ewm.stats.client.StatsClientProperties;
+import ru.practicum.ewm.stats.proto.ActionTypeProto;
+import ru.practicum.ewm.stats.proto.collector.UserActionControllerGrpc;
+import io.grpc.Status;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import java.util.concurrent.TimeUnit;
 import ru.practicum.ewm.controller.admin.AdminEventController;
 import ru.practicum.ewm.controller.priv.PrivateEventController;
 import ru.practicum.ewm.controller.publ.PublicEventController;
@@ -39,7 +40,7 @@ class EventControllerTest {
     @Mock
     private EventService eventService;
     @Mock
-    private StatsClient statsClient;
+    private CollectorClient statsClient;
     private MockMvc mockMvc;
 
     @BeforeEach
@@ -76,15 +77,15 @@ class EventControllerTest {
 
     @Test
     void publicEventEndpointShouldReturnOk() throws Exception {
-        mockMvc.perform(get("/events/10"))
+        mockMvc.perform(get("/events/10").header("X-EWM-USER-ID", 5))
                 .andExpect(status().isOk());
 
-        verify(statsClient).hit(any(EndpointHitRequestDto.class));
+        verify(statsClient).collect(5L, 10L, ActionTypeProto.ACTION_VIEW);
     }
 
     @Test
     void publicEventsShouldReturnOkWhenStatsServiceHasNoInstances() throws Exception {
-        MockMvc publicMockMvc = publicMvcWithoutStatsService();
+        MockMvc publicMockMvc = mockMvc;
         EventShortDto event = new EventShortDto();
         event.setId(10L);
         event.setTitle("Опубликованное событие");
@@ -107,7 +108,7 @@ class EventControllerTest {
         event.setTitle("Опубликованное событие");
         when(eventService.getPublicEvent(10L)).thenReturn(event);
 
-        publicMockMvc.perform(get("/events/10"))
+        publicMockMvc.perform(get("/events/10").header("X-EWM-USER-ID", 5))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(10))
                 .andExpect(jsonPath("$.title").value("Опубликованное событие"));
@@ -117,11 +118,11 @@ class EventControllerTest {
 
     @Test
     void missingPublicEventShouldReturnNotFoundWhenStatsServiceHasNoInstances() throws Exception {
-        MockMvc publicMockMvc = publicMvcWithoutStatsService();
+        MockMvc publicMockMvc = mockMvc;
         when(eventService.getPublicEvent(404L))
                 .thenThrow(new NotFoundException("Событие не найдено"));
 
-        publicMockMvc.perform(get("/events/404"))
+        publicMockMvc.perform(get("/events/404").header("X-EWM-USER-ID", 5))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value("NOT_FOUND"))
                 .andExpect(jsonPath("$.reason").value("Требуемый объект не найден."));
@@ -130,13 +131,11 @@ class EventControllerTest {
     }
 
     private MockMvc publicMvcWithoutStatsService() {
-        LoadBalancerClient loadBalancerClient = mock(LoadBalancerClient.class);
-        when(loadBalancerClient.choose("stats-server")).thenReturn(null);
-        StatsClientProperties properties = new StatsClientProperties();
-        properties.getDiscovery().setBackoffMs(1);
-        StatsClient realStatsClient = new StatsClient(properties, loadBalancerClient,
-                new RestTemplateBuilder()
-                        .additionalCustomizers(rest -> MockRestServiceServer.bindTo(rest).build()));
+        var stub = mock(UserActionControllerGrpc.UserActionControllerBlockingStub.class);
+        when(stub.withDeadlineAfter(anyLong(), any(TimeUnit.class))).thenReturn(stub);
+        when(stub.collectUserAction(any())).thenThrow(Status.UNAVAILABLE.asRuntimeException());
+        CollectorClient realStatsClient = new CollectorClient(stub, new StatsClientProperties(),
+                CircuitBreaker.ofDefaults("collector-api-test"));
         return MockMvcBuilders.standaloneSetup(
                 validated(new PublicEventController(eventService, realStatsClient))
         ).setControllerAdvice(new ErrorHandler()).build();
@@ -222,7 +221,7 @@ class EventControllerTest {
         when(eventService.getPublicEvent(404L))
                 .thenThrow(new NotFoundException("Событие не найдено"));
 
-        mockMvc.perform(get("/events/404"))
+        mockMvc.perform(get("/events/404").header("X-EWM-USER-ID", 5))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value("NOT_FOUND"))
                 .andExpect(jsonPath("$.reason").value("Требуемый объект не найден."));

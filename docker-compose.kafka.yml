@@ -29,5 +29,19 @@ services:
       timeout: 10s
       retries: 12
 
+  init-stats-topics:
+    image: apache/kafka:3.7.0
+    depends_on:
+      cleanup-kafka:
+        condition: service_healthy
+    network_mode: "service:cleanup-kafka"
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --create --if-not-exists --topic stats.user-actions.v1 --partitions 1 --replication-factor 1 --config retention.ms=-1 --config retention.bytes=-1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --create --if-not-exists --topic stats.events-similarity.v1 --partitions 1 --replication-factor 1 --config retention.ms=-1 --config retention.bytes=-1
+        /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:29092 --alter --entity-type topics --entity-name stats.user-actions.v1 --add-config retention.ms=-1,retention.bytes=-1,cleanup.policy=delete
+        /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:29092 --alter --entity-type topics --entity-name stats.events-similarity.v1 --add-config retention.ms=-1,retention.bytes=-1,cleanup.policy=delete
+
 volumes:
   cleanup-kafka-data:

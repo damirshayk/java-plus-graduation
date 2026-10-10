@@ -18,7 +18,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.ewm.EwmEventServiceApplication;
-import ru.practicum.ewm.StatsClient;
+import ru.practicum.ewm.stats.client.AnalyzerClient;
 import ru.practicum.ewm.client.RequestClient;
 import ru.practicum.ewm.client.user.UserClient;
 import ru.practicum.ewm.dto.compilation.NewCompilationDto;
@@ -55,7 +55,7 @@ class CompilationNetworkTransactionIntegrationTest {
     @MockBean
     private RequestClient requests;
     @MockBean
-    private StatsClient stats;
+    private AnalyzerClient stats;
 
     @BeforeEach
     void setUp() {
@@ -77,6 +77,10 @@ class CompilationNetworkTransactionIntegrationTest {
         when(users.batch(anyList())).thenAnswer(invocation -> {
             assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
             return List.of(user());
+        });
+        when(stats.ratings(anyList())).thenAnswer(invocation -> {
+            assertOutsideTransaction();
+            return Map.of();
         });
     }
 
@@ -120,11 +124,13 @@ class CompilationNetworkTransactionIntegrationTest {
             assertThat(event.getInitiator().getId()).isEqualTo(1L);
             assertThat(event.getInitiator().getName()).isEqualTo("Имя временно недоступно");
             assertThat(event.getConfirmedRequests()).isZero();
-            assertThat(event.getViews()).isZero();
+            assertThat(event.getRating()).isZero();
         });
         assertThat(title()).isEqualTo("Исходная");
         assertThat(countCompilations()).isEqualTo(1);
-        verifyNoInteractions(requests, stats);
+        verifyNoInteractions(requests);
+        verify(stats).ratings(List.of(10L));
+        verifyNoMoreInteractions(stats);
     }
 
     @ParameterizedTest
@@ -143,7 +149,7 @@ class CompilationNetworkTransactionIntegrationTest {
             assertThat(event.getInitiator().getId()).isEqualTo(1L);
             assertThat(event.getInitiator().getName()).isEqualTo("Имя временно недоступно");
             assertThat(event.getConfirmedRequests()).isZero();
-            assertThat(event.getViews()).isZero();
+            assertThat(event.getRating()).isZero();
             assertThat(jdbc.queryForObject("SELECT title FROM compilations WHERE id = ?", String.class,
                     result.getId())).isEqualTo("Сохранённая");
         };
@@ -152,7 +158,9 @@ class CompilationNetworkTransactionIntegrationTest {
         assertThat(countCompilations()).isEqualTo(create ? 2 : 1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM compilations_events", Long.class))
                 .isEqualTo(create ? 2 : 1);
-        verifyNoInteractions(requests, stats);
+        verifyNoInteractions(requests);
+        verify(stats).ratings(List.of(10L));
+        verifyNoMoreInteractions(stats);
     }
 
     @ParameterizedTest

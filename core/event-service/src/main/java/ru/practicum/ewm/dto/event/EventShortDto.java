@@ -26,5 +26,5 @@ public class EventShortDto {
     @JsonProperty("paid")
     private boolean isPaid;
     private String title;
-    private long views;
+    private double rating;
 }

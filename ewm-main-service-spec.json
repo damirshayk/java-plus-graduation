@@ -1070,7 +1070,7 @@
     },
     "/events": {
       "get": {
-        "description": "Обратите внимание: \n- это публичный эндпоинт, соответственно в выдаче должны быть только опубликованные события\n- текстовый поиск (по аннотации и подробному описанию) должен быть без учета регистра букв\n- если в запросе не указан диапазон дат [rangeStart-rangeEnd], то нужно выгружать события, которые произойдут позже текущей даты и времени\n- информация о каждом событии должна включать в себя количество просмотров и количество уже одобренных заявок на участие\n- информацию о том, что по этому эндпоинту был осуществлен и обработан запрос, нужно сохранить в сервисе статистики\n\nВ случае, если по заданным фильтрам не найдено ни одного события, возвращает пустой список",
+        "description": "Возвращает только опубликованные события. Текстовый поиск по аннотации и описанию не учитывает регистр. Если rangeStart не задан, поиск начинается с текущих даты и времени. Ответ содержит рейтинг и количество подтверждённых заявок. Получение списка не отправляет действие VIEW в Collector. При отсутствии подходящих событий возвращает пустой список.",
         "operationId": "getEvents_1",
         "parameters": [
           {
@@ -1135,7 +1135,7 @@
             }
           },
           {
-            "description": "Вариант сортировки: по дате события или по количеству просмотров",
+            "description": "EVENT_DATE — по дате события по возрастанию (по умолчанию); RATING — по рейтингу по убыванию. При равных значениях используется id по возрастанию. VIEWS — устаревший псевдоним RATING, сортировки по просмотрам нет.",
             "in": "query",
             "name": "sort",
             "required": false,
@@ -1143,6 +1143,7 @@
               "type": "string",
               "enum": [
                 "EVENT_DATE",
+                "RATING",
                 "VIEWS"
               ]
             }
@@ -1165,6 +1166,7 @@
             "name": "size",
             "required": false,
             "schema": {
+              "minimum": 1,
               "type": "integer",
               "format": "int32",
               "default": 10
@@ -1190,8 +1192,8 @@
               "application/json": {
                 "example": {
                   "status": "BAD_REQUEST",
-                  "reason": "Incorrectly made request.",
-                  "message": "Event must be published",
+                  "reason": "Некорректный запрос.",
+                  "message": "Начало диапазона не может быть позже окончания",
                   "timestamp": "2022-09-07 09:10:50"
                 },
                 "schema": {
@@ -1210,7 +1212,7 @@
     },
     "/events/{id}": {
       "get": {
-        "description": "Обратите внимание:\n- событие должно быть опубликовано\n- информация о событии должна включать в себя количество просмотров и количество подтвержденных запросов\n- информацию о том, что по этому эндпоинту был осуществлен и обработан запрос, нужно сохранить в сервисе статистики\n\nВ случае, если события с заданным id не найдено, возвращает статус код 404",
+        "description": "Возвращает опубликованное событие с рейтингом и количеством подтверждённых заявок. Обязателен положительный идентификатор пользователя в заголовке X-EWM-USER-ID. Действие VIEW отправляется в Collector только после успешной загрузки события. При временной недоступности Collector действие пропускается, ответ остаётся доступен. Если событие отсутствует или не опубликовано, возвращает 404.",
         "operationId": "getEvent_1",
         "parameters": [
           {
@@ -1219,6 +1221,18 @@
             "name": "id",
             "required": true,
             "schema": {
+              "minimum": 1,
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "description": "Положительный идентификатор пользователя",
+            "in": "header",
+            "name": "X-EWM-USER-ID",
+            "required": true,
+            "schema": {
+              "minimum": 1,
               "type": "integer",
               "format": "int64"
             }
@@ -1240,8 +1254,9 @@
               "application/json": {
                 "example": {
                   "status": "BAD_REQUEST",
-                  "reason": "Incorrectly made request.",
-                  "message": "Failed to convert value of type java.lang.String to required type int; nested exception is java.lang.NumberFormatException: For input string: ad",
+                  "errors": [],
+                  "reason": "Некорректный запрос.",
+                  "message": "Не задан обязательный заголовок X-EWM-USER-ID",
                   "timestamp": "2022-09-07 09:10:50"
                 },
                 "schema": {
@@ -1249,15 +1264,16 @@
                 }
               }
             },
-            "description": "Запрос составлен некорректно"
+            "description": "Заголовок X-EWM-USER-ID отсутствует; заголовок или id события имеют неверный формат либо неположительное значение"
           },
           "404": {
             "content": {
               "application/json": {
                 "example": {
                   "status": "NOT_FOUND",
-                  "reason": "The required object was not found.",
-                  "message": "Event with id=13 was not found",
+                  "errors": [],
+                  "reason": "Требуемый объект не найден.",
+                  "message": "Опубликованное событие с id=13 не найдено",
                   "timestamp": "2022-09-07 09:10:50"
                 },
                 "schema": {
@@ -1265,10 +1281,168 @@
                 }
               }
             },
-            "description": "Событие не найдено или недоступно"
+            "description": "Событие не найдено или не опубликовано"
           }
         },
         "summary": "Получение подробной информации об опубликованном событии по его идентификатору",
+        "tags": [
+          "Public: События"
+        ]
+      }
+    },
+    "/events/recommendations": {
+      "get": {
+        "description": "Возвращает рекомендации для пользователя из X-EWM-USER-ID. В ответ входят только найденные опубликованные события в порядке, полученном от Analyzer. Если рекомендаций нет или Analyzer временно недоступен, возвращает 200 с пустым массивом []. Несуществующие и неопубликованные события пропускаются. Результат может содержать меньше size событий. Получение рекомендаций не отправляет действие VIEW.",
+        "operationId": "getRecommendations",
+        "parameters": [
+          {
+            "description": "Положительный идентификатор пользователя",
+            "in": "header",
+            "name": "X-EWM-USER-ID",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "description": "Максимальное количество рекомендуемых событий",
+            "in": "query",
+            "name": "size",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "type": "integer",
+              "format": "int32",
+              "default": 10
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [],
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventShortDto"
+                  }
+                }
+              }
+            },
+            "description": "Рекомендации получены; пустой массив при отсутствии рекомендаций или временной недоступности Analyzer"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "errors": [],
+                  "status": "BAD_REQUEST",
+                  "reason": "Некорректный запрос.",
+                  "message": "Не задан обязательный заголовок X-EWM-USER-ID",
+                  "timestamp": "2022-09-07 09:10:50"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Заголовок X-EWM-USER-ID отсутствует; заголовок или size имеют неверный формат либо неположительное значение"
+          }
+        },
+        "summary": "Получение персональных рекомендаций событий",
+        "tags": [
+          "Public: События"
+        ]
+      }
+    },
+    "/events/{eventId}/like": {
+      "put": {
+        "description": "Поставить лайк может только пользователь с подтверждённой заявкой на опубликованное мероприятие, дата которого уже наступила. Действие LIKE отправляется в Collector только после всех проверок. При временной недоступности Collector действие пропускается, запрос завершается успешно. Тело запроса и тело успешного ответа отсутствуют.",
+        "operationId": "like",
+        "parameters": [
+          {
+            "description": "Положительный идентификатор события",
+            "in": "path",
+            "name": "eventId",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "description": "Положительный идентификатор пользователя",
+            "in": "header",
+            "name": "X-EWM-USER-ID",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Лайк принят; тело ответа отсутствует"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "errors": [],
+                  "status": "BAD_REQUEST",
+                  "reason": "Некорректный запрос.",
+                  "message": "Поставить лайк может только участник прошедшего мероприятия",
+                  "timestamp": "2022-09-07 09:10:50"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Заголовок X-EWM-USER-ID отсутствует; заголовок или eventId имеют неверный формат либо неположительное значение; дата события ещё не наступила или подтверждённой заявки пользователя нет"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "errors": [],
+                  "status": "NOT_FOUND",
+                  "reason": "Требуемый объект не найден.",
+                  "message": "Опубликованное событие с id=13 не найдено",
+                  "timestamp": "2022-09-07 09:10:50"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Событие не найдено или не опубликовано"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "errors": [],
+                  "status": "SERVICE_UNAVAILABLE",
+                  "reason": "Зависимый сервис временно недоступен.",
+                  "message": "Сервис заявок временно недоступен",
+                  "timestamp": "2022-09-07 09:10:50"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Сервис заявок временно недоступен; подтвердить участие пользователя невозможно"
+          }
+        },
+        "summary": "Добавление лайка опубликованному событию",
         "tags": [
           "Public: События"
         ]
@@ -1835,7 +2009,7 @@
         ]
       },
       "post": {
-        "description": "Обратите внимание:\n- нельзя добавить повторный запрос  (Ожидается код ошибки 409)\n- инициатор события не может добавить запрос на участие в своём событии (Ожидается код ошибки 409)\n- нельзя участвовать в неопубликованном событии (Ожидается код ошибки 409)\n- если у события достигнут лимит запросов на участие - необходимо вернуть ошибку  (Ожидается код ошибки 409)\n- если для события отключена пре-модерация запросов на участие, то запрос должен автоматически перейти в состояние подтвержденного",
+        "description": "Обратите внимание:\n- нельзя добавить повторный запрос  (Ожидается код ошибки 409)\n- инициатор события не может добавить запрос на участие в своём событии (Ожидается код ошибки 409)\n- нельзя участвовать в неопубликованном событии (Ожидается код ошибки 409)\n- если у события достигнут лимит запросов на участие - необходимо вернуть ошибку  (Ожидается код ошибки 409)\n- если для события отключена пре-модерация запросов на участие, то запрос должен автоматически перейти в состояние подтвержденного\n- действие REGISTER отправляется в Collector только после успешной фиксации созданной заявки; временный отказ Collector не отменяет заявку",
         "operationId": "addParticipationRequest",
         "parameters": [
           {
@@ -2015,74 +2189,74 @@
             "description": "Код статуса HTTP-ответа",
             "example": "FORBIDDEN",
             "enum": [
-              "100 CONTINUE",
-              "101 SWITCHING_PROTOCOLS",
-              "102 PROCESSING",
-              "103 CHECKPOINT",
-              "200 OK",
-              "201 CREATED",
-              "202 ACCEPTED",
-              "203 NON_AUTHORITATIVE_INFORMATION",
-              "204 NO_CONTENT",
-              "205 RESET_CONTENT",
-              "206 PARTIAL_CONTENT",
-              "207 MULTI_STATUS",
-              "208 ALREADY_REPORTED",
-              "226 IM_USED",
-              "300 MULTIPLE_CHOICES",
-              "301 MOVED_PERMANENTLY",
-              "302 FOUND",
-              "302 MOVED_TEMPORARILY",
-              "303 SEE_OTHER",
-              "304 NOT_MODIFIED",
-              "305 USE_PROXY",
-              "307 TEMPORARY_REDIRECT",
-              "308 PERMANENT_REDIRECT",
-              "400 BAD_REQUEST",
-              "401 UNAUTHORIZED",
-              "402 PAYMENT_REQUIRED",
-              "403 FORBIDDEN",
-              "404 NOT_FOUND",
-              "405 METHOD_NOT_ALLOWED",
-              "406 NOT_ACCEPTABLE",
-              "407 PROXY_AUTHENTICATION_REQUIRED",
-              "408 REQUEST_TIMEOUT",
-              "409 CONFLICT",
-              "410 GONE",
-              "411 LENGTH_REQUIRED",
-              "412 PRECONDITION_FAILED",
-              "413 PAYLOAD_TOO_LARGE",
-              "413 REQUEST_ENTITY_TOO_LARGE",
-              "414 URI_TOO_LONG",
-              "414 REQUEST_URI_TOO_LONG",
-              "415 UNSUPPORTED_MEDIA_TYPE",
-              "416 REQUESTED_RANGE_NOT_SATISFIABLE",
-              "417 EXPECTATION_FAILED",
-              "418 I_AM_A_TEAPOT",
-              "419 INSUFFICIENT_SPACE_ON_RESOURCE",
-              "420 METHOD_FAILURE",
-              "421 DESTINATION_LOCKED",
-              "422 UNPROCESSABLE_ENTITY",
-              "423 LOCKED",
-              "424 FAILED_DEPENDENCY",
-              "425 TOO_EARLY",
-              "426 UPGRADE_REQUIRED",
-              "428 PRECONDITION_REQUIRED",
-              "429 TOO_MANY_REQUESTS",
-              "431 REQUEST_HEADER_FIELDS_TOO_LARGE",
-              "451 UNAVAILABLE_FOR_LEGAL_REASONS",
-              "500 INTERNAL_SERVER_ERROR",
-              "501 NOT_IMPLEMENTED",
-              "502 BAD_GATEWAY",
-              "503 SERVICE_UNAVAILABLE",
-              "504 GATEWAY_TIMEOUT",
-              "505 HTTP_VERSION_NOT_SUPPORTED",
-              "506 VARIANT_ALSO_NEGOTIATES",
-              "507 INSUFFICIENT_STORAGE",
-              "508 LOOP_DETECTED",
-              "509 BANDWIDTH_LIMIT_EXCEEDED",
-              "510 NOT_EXTENDED",
-              "511 NETWORK_AUTHENTICATION_REQUIRED"
+              "CONTINUE",
+              "SWITCHING_PROTOCOLS",
+              "PROCESSING",
+              "CHECKPOINT",
+              "OK",
+              "CREATED",
+              "ACCEPTED",
+              "NON_AUTHORITATIVE_INFORMATION",
+              "NO_CONTENT",
+              "RESET_CONTENT",
+              "PARTIAL_CONTENT",
+              "MULTI_STATUS",
+              "ALREADY_REPORTED",
+              "IM_USED",
+              "MULTIPLE_CHOICES",
+              "MOVED_PERMANENTLY",
+              "FOUND",
+              "MOVED_TEMPORARILY",
+              "SEE_OTHER",
+              "NOT_MODIFIED",
+              "USE_PROXY",
+              "TEMPORARY_REDIRECT",
+              "PERMANENT_REDIRECT",
+              "BAD_REQUEST",
+              "UNAUTHORIZED",
+              "PAYMENT_REQUIRED",
+              "FORBIDDEN",
+              "NOT_FOUND",
+              "METHOD_NOT_ALLOWED",
+              "NOT_ACCEPTABLE",
+              "PROXY_AUTHENTICATION_REQUIRED",
+              "REQUEST_TIMEOUT",
+              "CONFLICT",
+              "GONE",
+              "LENGTH_REQUIRED",
+              "PRECONDITION_FAILED",
+              "PAYLOAD_TOO_LARGE",
+              "REQUEST_ENTITY_TOO_LARGE",
+              "URI_TOO_LONG",
+              "REQUEST_URI_TOO_LONG",
+              "UNSUPPORTED_MEDIA_TYPE",
+              "REQUESTED_RANGE_NOT_SATISFIABLE",
+              "EXPECTATION_FAILED",
+              "I_AM_A_TEAPOT",
+              "INSUFFICIENT_SPACE_ON_RESOURCE",
+              "METHOD_FAILURE",
+              "DESTINATION_LOCKED",
+              "UNPROCESSABLE_ENTITY",
+              "LOCKED",
+              "FAILED_DEPENDENCY",
+              "TOO_EARLY",
+              "UPGRADE_REQUIRED",
+              "PRECONDITION_REQUIRED",
+              "TOO_MANY_REQUESTS",
+              "REQUEST_HEADER_FIELDS_TOO_LARGE",
+              "UNAVAILABLE_FOR_LEGAL_REASONS",
+              "INTERNAL_SERVER_ERROR",
+              "NOT_IMPLEMENTED",
+              "BAD_GATEWAY",
+              "SERVICE_UNAVAILABLE",
+              "GATEWAY_TIMEOUT",
+              "HTTP_VERSION_NOT_SUPPORTED",
+              "VARIANT_ALSO_NEGOTIATES",
+              "INSUFFICIENT_STORAGE",
+              "LOOP_DETECTED",
+              "BANDWIDTH_LIMIT_EXCEEDED",
+              "NOT_EXTENDED",
+              "NETWORK_AUTHENTICATION_REQUIRED"
             ]
           },
           "timestamp": {
@@ -2144,7 +2318,7 @@
                 },
                 "paid": true,
                 "title": "Знаменитое шоу 'Летающая кукуруза'",
-                "views": 999
+                "rating": 3.5
               },
               {
                 "annotation": "За почти три десятилетия группа 'Java Core' закрепились на сцене как группа, объединяющая поколения.",
@@ -2161,7 +2335,7 @@
                 },
                 "paid": true,
                 "title": "Концерт рок-группы 'Java Core'",
-                "views": 991
+                "rating": 2.75
               }
             ],
             "items": {
@@ -2278,11 +2452,11 @@
             "description": "Заголовок",
             "example": "Знаменитое шоу 'Летающая кукуруза'"
           },
-          "views": {
-            "type": "integer",
-            "description": "Количество просмотрев события",
-            "format": "int64",
-            "example": 999
+          "rating": {
+            "type": "number",
+            "description": "Рейтинг события из Analyzer; при временной недоступности статистики — 0",
+            "format": "double",
+            "example": 3.5
           }
         }
       },
@@ -2382,11 +2556,11 @@
             "description": "Заголовок",
             "example": "Знаменитое шоу 'Летающая кукуруза'"
           },
-          "views": {
-            "type": "integer",
-            "description": "Количество просмотрев события",
-            "format": "int64",
-            "example": 999
+          "rating": {
+            "type": "number",
+            "description": "Рейтинг события из Analyzer; при временной недоступности статистики — 0",
+            "format": "double",
+            "example": 3.5
           }
         },
         "description": "Краткая информация о событии",
@@ -2406,7 +2580,7 @@
             },
             "paid": true,
             "title": "Знаменитое шоу 'Летающая кукуруза'",
-            "views": 999
+            "rating": 3.5
           },
           {
             "annotation": "За почти три десятилетия группа 'Java Core' закрепились на сцене как группа, объединяющая поколения.",
@@ -2423,7 +2597,7 @@
             },
             "paid": true,
             "title": "Концерт рок-группы 'Java Core'",
-            "views": 991
+            "rating": 2.75
           }
         ]
       },
