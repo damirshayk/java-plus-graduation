@@ -1,6 +1,5 @@
 package ru.practicum.ewm.controller.publ;
 
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.PositiveOrZero;
 import lombok.RequiredArgsConstructor;
@@ -8,8 +7,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
-import ru.practicum.ewm.EndpointHitRequestDto;
-import ru.practicum.ewm.StatsClient;
+import ru.practicum.ewm.stats.client.CollectorClient;
+import ru.practicum.ewm.stats.proto.ActionTypeProto;
 import ru.practicum.ewm.dto.event.EventFullDto;
 import ru.practicum.ewm.dto.event.EventShortDto;
 import ru.practicum.ewm.dto.event.EventSort;
@@ -25,7 +24,7 @@ import java.util.List;
 @RequestMapping("/events")
 public class PublicEventController {
     private final EventService eventService;
-    private final StatsClient statsClient;
+    private final CollectorClient collectorClient;
 
     @GetMapping
     public List<EventShortDto> getEvents(
@@ -37,27 +36,31 @@ public class PublicEventController {
             @RequestParam(name = "onlyAvailable", defaultValue = "false") boolean isOnlyAvailable,
             @RequestParam(required = false) EventSort sort,
             @RequestParam(defaultValue = "0") @PositiveOrZero int from,
-            @RequestParam(defaultValue = "10") @Positive int size,
-            HttpServletRequest httpRequest) {
+            @RequestParam(defaultValue = "10") @Positive int size) {
         log.info("Публичный поиск событий: from={}, size={}, onlyAvailable={}", from, size, isOnlyAvailable);
-        saveHit(httpRequest);
         return eventService.getPublicEvents(text, categories, isPaid, rangeStart, rangeEnd,
                 isOnlyAvailable, sort, from, size);
     }
 
     @GetMapping("/{id}")
-    public EventFullDto getEvent(@PathVariable Long id, HttpServletRequest httpRequest) {
+    public EventFullDto getEvent(@PathVariable @Positive Long id,
+                                @RequestHeader("X-EWM-USER-ID") @Positive Long userId) {
         log.info("Получение опубликованного события с id={}", id);
-        saveHit(httpRequest);
-        return eventService.getPublicEvent(id);
+        EventFullDto event = eventService.getPublicEvent(id);
+        collectorClient.collect(userId, id, ActionTypeProto.ACTION_VIEW);
+        return event;
     }
 
-    private void saveHit(HttpServletRequest request) {
-        statsClient.hit(EndpointHitRequestDto.builder()
-                .app("ewm-main-service")
-                .uri(request.getRequestURI())
-                .ip(request.getRemoteAddr())
-                .timestamp(LocalDateTime.now())
-                .build());
+    @GetMapping("/recommendations")
+    public List<EventShortDto> getRecommendations(@RequestHeader("X-EWM-USER-ID") @Positive Long userId,
+                                                  @RequestParam(defaultValue = "10") @Positive int size) {
+        return eventService.getRecommendations(userId, size);
+    }
+
+    @PutMapping("/{eventId}/like")
+    public void like(@PathVariable @Positive Long eventId,
+                     @RequestHeader("X-EWM-USER-ID") @Positive Long userId) {
+        eventService.validateLike(userId, eventId);
+        collectorClient.collect(userId, eventId, ActionTypeProto.ACTION_LIKE);
     }
 }

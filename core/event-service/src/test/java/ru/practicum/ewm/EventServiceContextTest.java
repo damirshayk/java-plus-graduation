@@ -11,6 +11,8 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import ru.practicum.ewm.model.Event;
+import ru.practicum.ewm.stats.client.AnalyzerClient;
+import ru.practicum.ewm.stats.client.StatsClientProperties;
 import ru.practicum.ewm.client.user.UserClient;
 import ru.practicum.ewm.client.RequestClient;
 import ru.practicum.ewm.client.user.UserDirectory;
@@ -63,7 +65,7 @@ class EventServiceContextTest {
         assertThat(context.containsBean("requestServiceApplication")).isFalse();
         assertThat(context.containsBean("commentServiceImpl")).isFalse();
         assertThat(context.getBean(ConfirmedRequestCounter.class)).isNotNull();
-        assertThat(context.getBean(StatsClient.class)).isNotNull();
+        assertThat(context.getBean(AnalyzerClient.class)).isNotNull();
         assertThat(context.getBeansOfType(EventDisplayProperties.class)).hasSize(1);
         assertThat(context.getBeansOfType(StatsClientProperties.class)).hasSize(1);
 

@@ -14,7 +14,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.ewm.EwmEventServiceApplication;
-import ru.practicum.ewm.StatsClient;
+import ru.practicum.ewm.stats.client.AnalyzerClient;
 import ru.practicum.ewm.client.user.UserClient;
 import ru.practicum.ewm.client.RequestClient;
 import ru.practicum.ewm.cleanup.CleanupEventCodec;
@@ -83,7 +83,7 @@ class UserDataCleanupIntegrationTest {
     @MockBean
     private UserClient userClient;
     @MockBean
-    private StatsClient statsClient;
+    private AnalyzerClient statsClient;
     @MockBean
     private RequestClient requests;
 
@@ -211,7 +211,7 @@ class UserDataCleanupIntegrationTest {
                 assertThat(event.getInitiator().getName()).isEqualTo("Пользователь " + event.getInitiator().getId());
                 assertThat(event.getCategory().getName()).isNotBlank();
                 assertThat(event.getConfirmedRequests()).isZero();
-                assertThat(event.getViews()).isZero();
+                assertThat(event.getRating()).isZero();
             });
         });
         assertThat(statistics.getPrepareStatementCount()).isLessThanOrEqualTo(3);

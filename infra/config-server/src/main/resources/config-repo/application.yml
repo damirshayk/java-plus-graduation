@@ -1,4 +1,6 @@
 spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
   cloud:
     openfeign:
       client:
@@ -11,3 +13,34 @@ spring:
         enabled: false
   jackson:
     default-property-inclusion: always
+
+stats:
+  client:
+    timeout-ms: 1000
+    circuit-breaker:
+      sliding-window-size: 10
+      minimum-number-of-calls: 1
+      failure-rate-threshold: 50
+      wait-duration-in-open-state-ms: 5000
+      permitted-number-of-calls-in-half-open-state: 1
+  kafka:
+    topics:
+      user-actions: stats.user-actions.v1
+      events-similarity: stats.events-similarity.v1
+    retry-backoff-ms: 1000
+    send-timeout-ms: 12000
+  weights:
+    view: 0.4
+    register: 0.8
+    like: 1.0
+
+grpc:
+  client:
+    collector:
+      address: discovery:///collector
+      negotiation-type: plaintext
+      default-load-balancing-policy: round_robin
+    analyzer:
+      address: discovery:///analyzer
+      negotiation-type: plaintext
+      default-load-balancing-policy: round_robin

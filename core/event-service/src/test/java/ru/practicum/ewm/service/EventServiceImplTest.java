@@ -10,8 +10,7 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
-import ru.practicum.ewm.StatsClient;
-import ru.practicum.ewm.ViewStats;
+import ru.practicum.ewm.stats.client.AnalyzerClient;
 import ru.practicum.ewm.dto.event.*;
 import ru.practicum.ewm.dto.user.UserShortDto;
 import ru.practicum.ewm.client.user.UserDirectory;
@@ -53,7 +52,7 @@ class EventServiceImplTest {
     @Mock
     private EventMapper eventMapper;
     @Mock
-    private StatsClient statsClient;
+    private AnalyzerClient statsClient;
     private EventServiceImpl eventService;
 
     @BeforeEach
@@ -102,21 +101,19 @@ class EventServiceImplTest {
     }
 
     @Test
-    void getUserEventShouldIncludeViewsFromStatsService() {
+    void getUserEventShouldIncludeFractionalRating() {
         UserShortDto user = new UserShortDto();
         user.setId(1L);
         Event event = new Event();
         event.setId(10L);
         event.setInitiatorId(user.getId());
         when(userDirectory.require(1L)).thenReturn(user);
-        ViewStats stats = ViewStats.builder().uri("/events/10").hits(7L).build();
         when(eventRepository.findById(10L)).thenReturn(Optional.of(event));
-        when(statsClient.getStats(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
-                eq(List.of("/events/10")), eq(true))).thenReturn(List.of(stats));
+        when(statsClient.ratings(List.of(10L))).thenReturn(Map.of(10L, 7.4));
 
         eventService.getUserEvent(1L, 10L);
 
-        verify(eventMapper).toFullDto(same(event), same(user), eq(0L), eq(7L));
+        verify(eventMapper).toFullDto(same(event), same(user), eq(0L), eq(7.4));
     }
 
     @Test
@@ -172,7 +169,7 @@ class EventServiceImplTest {
         when(categoryRepository.findById(2L)).thenReturn(Optional.of(category));
         when(eventMapper.toEvent(request)).thenReturn(event);
         when(eventRepository.save(event)).thenReturn(event);
-        when(eventMapper.toFullDto(event, user, 0L, 0L)).thenReturn(expected);
+        when(eventMapper.toFullDto(event, user, 0L, 0.0)).thenReturn(expected);
 
         EventFullDto result = eventService.createEvent(1L, request);
 
@@ -204,7 +201,7 @@ class EventServiceImplTest {
         when(eventRepository.findInfoById(10L)).thenReturn(
                 Optional.of(new EventInfoDto(10L, 1L, event.getState(), 0, true)));
         when(eventRepository.findById(10L)).thenReturn(Optional.of(event));
-        when(eventMapper.toFullDto(event, user, 0L, 0L)).thenReturn(expected);
+        when(eventMapper.toFullDto(event, user, 0L, 0.0)).thenReturn(expected);
 
         EventFullDto result = eventService.updateUserEvent(1L, 10L, request);
 
@@ -229,7 +226,7 @@ class EventServiceImplTest {
                 Optional.of(new EventInfoDto(10L, user.getId(), event.getState(), 0, true)));
         when(eventRepository.findEventDateById(10L)).thenReturn(Optional.of(event.getEventDate()));
         when(eventRepository.findById(10L)).thenReturn(Optional.of(event));
-        when(eventMapper.toFullDto(event, user, 0L, 0L)).thenReturn(expected);
+        when(eventMapper.toFullDto(event, user, 0L, 0.0)).thenReturn(expected);
 
         EventFullDto result = eventService.updateAdminEvent(10L, request);
 
@@ -250,7 +247,7 @@ class EventServiceImplTest {
         when(eventRepository.findAll(org.mockito.ArgumentMatchers.<Specification<Event>>any(),
                 org.mockito.ArgumentMatchers.any(Sort.class))).thenReturn(List.of(full, available));
         when(confirmedRequestCounter.countAll(List.of(10L, 20L))).thenReturn(Map.of(10L, 1L));
-        when(eventMapper.toShortDto(available, user, 0L, 0L)).thenReturn(availableDto);
+        when(eventMapper.toShortDto(available, user, 0L, 0.0)).thenReturn(availableDto);
 
         List<EventShortDto> result = eventService.getPublicEvents(null, null, null,
                 null, null, true, null, 0, 10);
@@ -266,20 +263,16 @@ class EventServiceImplTest {
         when(userDirectory.findAll(List.of(1L))).thenReturn(Map.of(1L, user));
         EventShortDto firstDto = new EventShortDto();
         firstDto.setId(10L);
-        firstDto.setViews(2L);
+        firstDto.setRating(2.4);
         EventShortDto secondDto = new EventShortDto();
         secondDto.setId(20L);
-        secondDto.setViews(7L);
+        secondDto.setRating(7.4);
         when(eventRepository.findAll(org.mockito.ArgumentMatchers.<Specification<Event>>any(),
                 org.mockito.ArgumentMatchers.any(Sort.class))).thenReturn(List.of(first, second));
         when(confirmedRequestCounter.countAll(List.of(10L, 20L))).thenReturn(Map.of());
-        when(statsClient.getStats(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
-                eq(List.of("/events/10", "/events/20")), eq(true)))
-                .thenReturn(List.of(
-                        ViewStats.builder().uri("/events/10").hits(2L).build(),
-                        ViewStats.builder().uri("/events/20").hits(7L).build()));
-        when(eventMapper.toShortDto(first, user, 0L, 2L)).thenReturn(firstDto);
-        when(eventMapper.toShortDto(second, user, 0L, 7L)).thenReturn(secondDto);
+        when(statsClient.ratings(List.of(10L, 20L))).thenReturn(Map.of(10L, 2.4, 20L, 7.4));
+        when(eventMapper.toShortDto(first, user, 0L, 2.4)).thenReturn(firstDto);
+        when(eventMapper.toShortDto(second, user, 0L, 7.4)).thenReturn(secondDto);
 
         List<EventShortDto> result = eventService.getPublicEvents(null, null, null,
                 null, null, false, EventSort.VIEWS, 0, 10);
@@ -310,8 +303,8 @@ class EventServiceImplTest {
         when(userDirectory.findAll(List.of(1L, 2L))).thenReturn(Map.of(1L, firstUser, 2L, secondUser));
         EventFullDto firstDto = new EventFullDto();
         EventFullDto secondDto = new EventFullDto();
-        when(eventMapper.toFullDto(first, firstUser, 0L, 0L)).thenReturn(firstDto);
-        when(eventMapper.toFullDto(second, secondUser, 0L, 0L)).thenReturn(secondDto);
+        when(eventMapper.toFullDto(first, firstUser, 0L, 0.0)).thenReturn(firstDto);
+        when(eventMapper.toFullDto(second, secondUser, 0L, 0.0)).thenReturn(secondDto);
 
         assertEquals(List.of(firstDto, secondDto), eventService.getAdminEvents(null, null, null, null, null, 0, 10));
 

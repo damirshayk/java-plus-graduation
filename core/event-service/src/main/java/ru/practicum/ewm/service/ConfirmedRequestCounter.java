@@ -7,4 +7,6 @@ public interface ConfirmedRequestCounter {
     long count(Long eventId);
 
     Map<Long, Long> countAll(List<Long> eventIds);
+
+    boolean hasConfirmedRequest(Long userId, Long eventId);
 }
