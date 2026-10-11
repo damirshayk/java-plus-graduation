@@ -19,6 +19,8 @@ import ru.practicum.ewm.model.*;
 import ru.practicum.ewm.repository.RequestRepository;
 import ru.practicum.ewm.service.RequestService;
 import ru.practicum.ewm.service.RequestDataGuard;
+import ru.practicum.ewm.stats.client.CollectorClient;
+import ru.practicum.ewm.stats.proto.ActionTypeProto;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -35,19 +37,22 @@ public class RequestServiceImpl implements RequestService {
     private final RequestMapper requestMapper;
     private final RequestDataGuard requestDataGuard;
     private final TransactionTemplate localTransaction;
+    private final CollectorClient collectorClient;
 
     public RequestServiceImpl(RequestRepository requestRepository,
                               UserDirectory userDirectory,
                               EventDirectory eventDirectory,
                               RequestMapper requestMapper,
                               RequestDataGuard requestDataGuard,
-                              PlatformTransactionManager transactionManager) {
+                              PlatformTransactionManager transactionManager,
+                              CollectorClient collectorClient) {
         this.requestRepository = requestRepository;
         this.userDirectory = userDirectory;
         this.eventDirectory = eventDirectory;
         this.requestMapper = requestMapper;
         this.requestDataGuard = requestDataGuard;
         this.localTransaction = new TransactionTemplate(transactionManager);
+        this.collectorClient = collectorClient;
     }
 
     @Override
@@ -69,7 +74,7 @@ public class RequestServiceImpl implements RequestService {
     public ParticipationRequestDto addParticipationRequest(Long userId, Long eventId) {
         userDirectory.require(userId);
         EventInfoDto event = requireEvent(eventId);
-        return localTransaction.execute(transaction -> {
+        ParticipationRequestDto result = localTransaction.execute(transaction -> {
             requestDataGuard.lockForWrite(userId, eventId);
 
             if (requestRepository.existsByRequesterIdAndEventId(userId, eventId)) {
@@ -103,6 +108,8 @@ public class RequestServiceImpl implements RequestService {
                     .build();
             return requestMapper.toDto(requestRepository.save(newRequest));
         });
+        collectorClient.collect(userId, eventId, ActionTypeProto.ACTION_REGISTER);
+        return result;
     }
 
     @Override

@@ -24,6 +24,7 @@ import ru.practicum.ewm.repository.CompilationRepository;
 import ru.practicum.ewm.repository.EventRepository;
 import ru.practicum.ewm.service.CompilationService;
 import ru.practicum.ewm.service.EventDisplayEnrichment;
+import ru.practicum.ewm.stats.client.AnalyzerClient;
 
 import java.util.HashSet;
 import java.util.Collection;
@@ -46,17 +47,20 @@ public class CompilationServiceImpl implements CompilationService {
     private final EventMapper eventMapper;
     private final EventDisplayEnrichment displayEnrichment;
     private final TransactionTemplate transactionTemplate;
+    private final AnalyzerClient analyzerClient;
 
     public CompilationServiceImpl(CompilationMapper compilationMapper, CompilationRepository compilationRepository,
                                   EventRepository eventRepository, EventMapper eventMapper,
                                   EventDisplayEnrichment displayEnrichment,
-                                  PlatformTransactionManager transactionManager) {
+                                  PlatformTransactionManager transactionManager,
+                                  AnalyzerClient analyzerClient) {
         this.compilationMapper = compilationMapper;
         this.compilationRepository = compilationRepository;
         this.eventRepository = eventRepository;
         this.eventMapper = eventMapper;
         this.displayEnrichment = displayEnrichment;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.analyzerClient = analyzerClient;
     }
 
     @Override
@@ -67,6 +71,7 @@ public class CompilationServiceImpl implements CompilationService {
                 : eventRepository.findAllById(newCompilationDto.getEvents());
         Set<Long> foundIds = eventIds(snapshot);
         Map<Long, UserShortDto> users = findUsers(snapshot);
+        Map<Long, Double> ratings = analyzerClient.ratings(foundIds.stream().sorted().toList());
         return transactionTemplate.execute(status -> {
             validateTitle(newCompilationDto.getTitle());
             List<Event> events = requireEvents(foundIds);
@@ -77,7 +82,7 @@ public class CompilationServiceImpl implements CompilationService {
             compilation.setEvents(new HashSet<>(events));
             Compilation saved = compilationRepository.save(compilation);
             log.info("Подборка создана с id={}", saved.getId());
-            return toDtos(List.of(saved), users).getFirst();
+            return toDtos(List.of(saved), users, ratings).getFirst();
         });
     }
 
@@ -101,6 +106,7 @@ public class CompilationServiceImpl implements CompilationService {
         List<Event> events = updateRequest.getEvents() == null ? List.copyOf(snapshot.getEvents())
                 : requireEvents(updateRequest.getEvents());
         Map<Long, UserShortDto> users = findUsers(events);
+        Map<Long, Double> ratings = analyzerClient.ratings(eventIds(events).stream().sorted().toList());
         return transactionTemplate.execute(status -> {
             Compilation compilation = requireCompilation(compId);
             validateUpdateTitle(compilation, updateRequest);
@@ -114,7 +120,7 @@ public class CompilationServiceImpl implements CompilationService {
             compilationMapper.updateCompilation(compilation, updateRequest);
             Compilation updated = compilationRepository.save(compilation);
             log.info("Обновлена подборка с названием {}", updated.getTitle());
-            return toDtos(List.of(updated), users).getFirst();
+            return toDtos(List.of(updated), users, ratings).getFirst();
         });
     }
 
@@ -150,7 +156,8 @@ public class CompilationServiceImpl implements CompilationService {
     private List<CompilationDto> toDtos(List<Compilation> compilations) {
         List<Event> events = compilations.stream().flatMap(compilation -> compilation.getEvents().stream()).toList();
         return toDtos(compilations, displayEnrichment.findUsers(
-                events.stream().map(Event::getInitiatorId).toList()));
+                events.stream().map(Event::getInitiatorId).toList()),
+                analyzerClient.ratings(eventIds(events).stream().sorted().toList()));
     }
 
     private Compilation requireCompilation(Long id) {
@@ -186,7 +193,8 @@ public class CompilationServiceImpl implements CompilationService {
         return displayEnrichment.findUsers(events.stream().map(Event::getInitiatorId).toList());
     }
 
-    private List<CompilationDto> toDtos(List<Compilation> compilations, Map<Long, UserShortDto> users) {
+    private List<CompilationDto> toDtos(List<Compilation> compilations, Map<Long, UserShortDto> users,
+                                         Map<Long, Double> ratings) {
         return compilations.stream().map(compilation -> {
             Set<EventShortDto> events = compilation.getEvents().stream()
                     .sorted(Comparator.comparing(Event::getId))
@@ -195,7 +203,7 @@ public class CompilationServiceImpl implements CompilationService {
                         if (initiator == null) {
                             throw new NotFoundException("Пользователь с id=" + event.getInitiatorId() + " не найден");
                         }
-                        return eventMapper.toShortDto(event, initiator, 0L, 0L);
+                        return eventMapper.toShortDto(event, initiator, 0L, ratings.getOrDefault(event.getId(), 0.0));
                     }).collect(Collectors.toCollection(LinkedHashSet::new));
             return compilationMapper.toDto(compilation, events);
         }).toList();

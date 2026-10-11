@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -82,6 +83,18 @@ public class ErrorHandler {
                 .status(HttpStatus.BAD_REQUEST.name())
                 .reason("Некорректный запрос.")
                 .message("Параметр " + exception.getName() + " содержит значение неверного формата")
+                .timestamp(LocalDateTime.now())
+                .build();
+    }
+
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiError handleMissingHeader(MissingRequestHeaderException exception) {
+        return ApiError.builder()
+                .errors(Collections.emptyList())
+                .status(HttpStatus.BAD_REQUEST.name())
+                .reason("Некорректный запрос.")
+                .message("Не задан обязательный заголовок " + exception.getHeaderName())
                 .timestamp(LocalDateTime.now())
                 .build();
     }

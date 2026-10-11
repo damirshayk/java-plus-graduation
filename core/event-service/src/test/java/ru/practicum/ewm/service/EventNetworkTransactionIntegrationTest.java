@@ -18,7 +18,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.ewm.EwmEventServiceApplication;
-import ru.practicum.ewm.StatsClient;
+import ru.practicum.ewm.stats.client.AnalyzerClient;
 import ru.practicum.ewm.client.RequestClient;
 import ru.practicum.ewm.client.user.UserClient;
 import ru.practicum.ewm.dto.event.UpdateEventAdminRequest;
@@ -59,7 +59,7 @@ class EventNetworkTransactionIntegrationTest {
     @MockBean
     private RequestClient requests;
     @MockBean
-    private StatsClient stats;
+    private AnalyzerClient stats;
 
     @BeforeEach
     void setUp() {
@@ -93,9 +93,9 @@ class EventNetworkTransactionIntegrationTest {
             assertOutsideTransaction();
             return Map.of();
         });
-        when(stats.getStats(any(), any(), anyList(), eq(true))).thenAnswer(invocation -> {
+        when(stats.ratings(anyList())).thenAnswer(invocation -> {
             assertOutsideTransaction();
-            return List.of();
+            return Map.of();
         });
     }
 

@@ -1,0 +1,28 @@
+server:
+  port: 0
+
+spring:
+  kafka:
+    consumer:
+      group-id: aggregator
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.LongDeserializer
+        spring.deserializer.value.delegate.class: ru.practicum.ewm.stats.serialization.UserActionDeserializer
+        max.poll.interval.ms: 300000
+      max-poll-records: 50
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: ru.practicum.ewm.stats.serialization.AvroSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.block.ms: 3000
+        request.timeout.ms: 3000
+        delivery.timeout.ms: 10000
+    listener:
+      ack-mode: manual_immediate
+      concurrency: 1

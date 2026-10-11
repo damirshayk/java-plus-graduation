@@ -28,7 +28,7 @@ public class EventFullDto {
     @JsonProperty("paid")
     private boolean isPaid;
     private String title;
-    private long views;
+    private double rating;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime createdOn;

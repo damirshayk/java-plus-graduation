@@ -25,6 +25,7 @@ import ru.practicum.ewm.model.Event;
 import ru.practicum.ewm.repository.CompilationRepository;
 import ru.practicum.ewm.repository.EventRepository;
 import ru.practicum.ewm.service.impl.CompilationServiceImpl;
+import ru.practicum.ewm.stats.client.AnalyzerClient;
 
 import java.util.List;
 import java.util.Map;
@@ -58,6 +59,9 @@ class CompilationServiceImplTest {
     @Mock
     private PlatformTransactionManager transactionManager;
 
+    @Mock
+    private AnalyzerClient analyzerClient;
+
     private CompilationServiceImpl compilationService;
 
     private Compilation compilation;
@@ -71,7 +75,7 @@ class CompilationServiceImplTest {
         compilationService = new CompilationServiceImpl(compilationMapper, compilationRepository, eventRepository,
                 eventMapper,
                 new EventDisplayEnrichment(userDirectory, mock(ConfirmedRequestCounter.class),
-                        displayProperties), transactionManager);
+                        displayProperties), transactionManager, analyzerClient);
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         compilation = Compilation.builder()
                 .id(1L)
@@ -252,8 +256,8 @@ class CompilationServiceImplTest {
         when(compilationRepository.findAll(any(PageRequest.class))).thenReturn(new PageImpl<>(List.of(compilation, other)));
         when(compilationRepository.findAllWithEventsByIdIn(List.of(1L, 2L))).thenReturn(List.of(other, compilation));
         when(userDirectory.findAll(any())).thenReturn(Map.of(1L, firstUser, 2L, secondUser));
-        when(eventMapper.toShortDto(first, firstUser, 0L, 0L)).thenReturn(firstDto);
-        when(eventMapper.toShortDto(second, secondUser, 0L, 0L)).thenReturn(secondDto);
+        when(eventMapper.toShortDto(first, firstUser, 0L, 0.0)).thenReturn(firstDto);
+        when(eventMapper.toShortDto(second, secondUser, 0L, 0.0)).thenReturn(secondDto);
         when(compilationMapper.toDto(compilation, Set.of(firstDto))).thenReturn(compilationDto);
         CompilationDto otherDto = new CompilationDto();
         when(compilationMapper.toDto(other, Set.of(firstDto, secondDto))).thenReturn(otherDto);

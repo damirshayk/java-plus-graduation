@@ -14,7 +14,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import ru.practicum.ewm.EwmEventServiceApplication;
-import ru.practicum.ewm.StatsClient;
+import ru.practicum.ewm.stats.client.AnalyzerClient;
 import ru.practicum.ewm.client.user.UserClient;
 import ru.practicum.ewm.client.RequestClient;
 import ru.practicum.ewm.cleanup.CleanupEventCodec;
@@ -83,7 +83,7 @@ class UserDataCleanupIntegrationTest {
     @MockBean
     private UserClient userClient;
     @MockBean
-    private StatsClient statsClient;
+    private AnalyzerClient analyzerClient;
     @MockBean
     private RequestClient requests;
 
@@ -118,7 +118,7 @@ class UserDataCleanupIntegrationTest {
         assertThat(count("cleanup_inbox")).isEqualTo(2);
         assertThat(snapshots(1L)).hasSize(1);
         assertThat(snapshots(1L).getFirst().eventIds()).containsExactly(10L);
-        verifyNoInteractions(userClient, statsClient, requests);
+        verifyNoInteractions(userClient, analyzerClient, requests);
     }
 
     @Test
@@ -211,7 +211,7 @@ class UserDataCleanupIntegrationTest {
                 assertThat(event.getInitiator().getName()).isEqualTo("Пользователь " + event.getInitiator().getId());
                 assertThat(event.getCategory().getName()).isNotBlank();
                 assertThat(event.getConfirmedRequests()).isZero();
-                assertThat(event.getViews()).isZero();
+                assertThat(event.getRating()).isZero();
             });
         });
         assertThat(statistics.getPrepareStatementCount()).isLessThanOrEqualTo(3);
@@ -335,7 +335,7 @@ class UserDataCleanupIntegrationTest {
                 .andExpect(jsonPath("$.requestModeration").value(true))
                 .andExpect(jsonPath("$.initiator").doesNotExist());
         assertThat(statistics.getPrepareStatementCount()).isEqualTo(1);
-        verifyNoInteractions(userClient, statsClient);
+        verifyNoInteractions(userClient, analyzerClient);
         mvc.perform(get("/internal/events/999")).andExpect(status().isNotFound());
         mvc.perform(get("/internal/events/0")).andExpect(status().isNotFound());
         mvc.perform(get("/internal/events/-1")).andExpect(status().isNotFound());
@@ -355,7 +355,7 @@ class UserDataCleanupIntegrationTest {
                 .andExpect(jsonPath("$.requestModeration").value(false));
 
         assertThat(statistics.getPrepareStatementCount()).isEqualTo(1);
-        verifyNoInteractions(userClient, statsClient);
+        verifyNoInteractions(userClient, analyzerClient);
     }
 
     private void consume(Long userId) {

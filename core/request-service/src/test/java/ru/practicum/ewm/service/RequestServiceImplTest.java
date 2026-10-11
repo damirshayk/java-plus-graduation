@@ -19,6 +19,8 @@ import ru.practicum.ewm.client.event.EventDirectory;
 import ru.practicum.ewm.dto.event.EventInfoDto;
 import ru.practicum.ewm.repository.RequestRepository;
 import ru.practicum.ewm.service.impl.RequestServiceImpl;
+import ru.practicum.ewm.stats.client.CollectorClient;
+import ru.practicum.ewm.stats.proto.ActionTypeProto;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -44,6 +46,9 @@ public class RequestServiceImplTest {
     @Mock
     private PlatformTransactionManager transactionManager;
 
+    @Mock
+    private CollectorClient collectorClient;
+
     private RequestServiceImpl requestService;
 
     private UserShortDto requester;
@@ -55,7 +60,7 @@ public class RequestServiceImplTest {
         requester = user(1L, "Участник");
         initiator = user(2L, "Инициатор");
         requestService = new RequestServiceImpl(requestRepository, userDirectory, eventDirectory,
-                requestMapper, requestDataGuard, transactionManager);
+                requestMapper, requestDataGuard, transactionManager, collectorClient);
         lenient().when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
 
         event = new EventInfoDto(10L, initiator.getId(), EventState.PUBLISHED, 10, true);
@@ -88,6 +93,9 @@ public class RequestServiceImplTest {
 
         assertNotNull(result);
         assertEquals("PENDING", result.getStatus());
+        var publicationOrder = inOrder(transactionManager, collectorClient);
+        publicationOrder.verify(transactionManager).commit(any());
+        publicationOrder.verify(collectorClient).collect(1L, 10L, ActionTypeProto.ACTION_REGISTER);
         verify(requestRepository, times(1)).save(any(ParticipationRequest.class));
     }
 

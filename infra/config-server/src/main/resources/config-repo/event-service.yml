@@ -4,7 +4,6 @@ server:
 
 spring:
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
     producer:
       properties:
         max.block.ms: 3000
@@ -26,6 +25,27 @@ spring:
   sql:
     init:
       mode: never
+
+stats:
+  client:
+    timeout-ms: 1000
+    circuit-breaker:
+      sliding-window-size: 10
+      minimum-number-of-calls: 1
+      failure-rate-threshold: 50
+      wait-duration-in-open-state-ms: 5000
+      permitted-number-of-calls-in-half-open-state: 1
+
+grpc:
+  client:
+    collector:
+      address: discovery:///collector
+      negotiation-type: plaintext
+      default-load-balancing-policy: round_robin
+    analyzer:
+      address: discovery:///analyzer
+      negotiation-type: plaintext
+      default-load-balancing-policy: round_robin
 
 ewm:
   cleanup:
@@ -49,18 +69,3 @@ ewm:
       failure-rate-threshold: 50
       wait-duration-in-open-state-ms: 5000
       permitted-number-of-calls-in-half-open-state: 1
-
-stats:
-  service-id: stats-server
-  discovery:
-    max-attempts: 2
-    backoff-ms: 100
-  http:
-    connect-timeout-ms: 1000
-    read-timeout-ms: 2000
-  circuit-breaker:
-    sliding-window-size: 10
-    minimum-number-of-calls: 1
-    failure-rate-threshold: 50
-    wait-duration-in-open-state-ms: 5000
-    permitted-number-of-calls-in-half-open-state: 1

@@ -11,6 +11,8 @@ import org.springframework.kafka.support.SendResult;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -101,8 +103,14 @@ class SharedOutboxRelayTest {
     }
 
     private void add(Long... userIds) {
-        for (Long userId : userIds) {
-            transaction.executeWithoutResult(status -> outbox.enqueue(event(userId)));
+        for (int index = 0; index < userIds.length; index++) {
+            CommonCleanupEvent event = event(userIds[index]);
+            Timestamp createdAt = Timestamp.from(Instant.EPOCH.plusSeconds(index));
+            transaction.executeWithoutResult(status -> {
+                outbox.enqueue(event);
+                jdbc.update("UPDATE cleanup_outbox SET created_at = ? WHERE event_id = ?",
+                        createdAt, event.eventId().toString());
+            });
         }
     }
 

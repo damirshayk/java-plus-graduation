@@ -1,4 +1,6 @@
 spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
   cloud:
     openfeign:
       client:
@@ -11,3 +13,15 @@ spring:
         enabled: false
   jackson:
     default-property-inclusion: always
+
+stats:
+  kafka:
+    topics:
+      user-actions: stats.user-actions.v1
+      events-similarity: stats.events-similarity.v1
+    retry-backoff-ms: 1000
+    send-timeout-ms: 12000
+  weights:
+    view: 0.4
+    register: 0.8
+    like: 1.0

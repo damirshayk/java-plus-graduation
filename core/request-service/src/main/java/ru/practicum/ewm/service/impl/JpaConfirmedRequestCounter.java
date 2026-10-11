@@ -14,6 +14,10 @@ import java.util.stream.Collectors;
 public class JpaConfirmedRequestCounter {
     private final RequestRepository requestRepository;
 
+    public boolean hasConfirmedRequest(Long userId, Long eventId) {
+        return requestRepository.existsByRequesterIdAndEventIdAndStatus(userId, eventId, RequestStatus.CONFIRMED);
+    }
+
     public long count(Long eventId) {
         return requestRepository.countByEventIdAndStatus(eventId, RequestStatus.CONFIRMED);
     }

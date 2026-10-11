@@ -1,0 +1,20 @@
+@namespace("ru.practicum.ewm.stats.avro")
+protocol StatsProtocol {
+    enum ActionTypeAvro {
+        VIEW, REGISTER, LIKE
+    }
+
+    record UserActionAvro {
+        long userId;
+        long eventId;
+        ActionTypeAvro actionType;
+        timestamp_ms timestamp;
+    }
+
+    record EventSimilarityAvro {
+        long eventA;
+        long eventB;
+        double score;
+        timestamp_ms timestamp;
+    }
+}

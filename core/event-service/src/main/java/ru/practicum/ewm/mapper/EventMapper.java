@@ -25,7 +25,7 @@ public interface EventMapper {
             Event event,
             UserShortDto initiator,
             long confirmedRequests,
-            long views
+            double rating
     );
 
     @Mapping(target = "initiator", source = "initiator")
@@ -34,7 +34,7 @@ public interface EventMapper {
             Event event,
             UserShortDto initiator,
             long confirmedRequests,
-            long views
+            double rating
     );
 
     @BeanMapping(

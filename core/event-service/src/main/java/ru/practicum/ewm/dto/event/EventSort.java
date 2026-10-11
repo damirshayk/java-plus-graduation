@@ -6,8 +6,9 @@ import lombok.RequiredArgsConstructor;
 @Getter
 @RequiredArgsConstructor
 public enum EventSort {
-    EVENT_DATE("eventDate"), // Сортировка по дате события
-    VIEWS("views");          // Сортировка по количеству просмотров
+    EVENT_DATE("eventDate"),
+    RATING("rating"),
+    VIEWS("rating");
 
     private final String property;
 }
