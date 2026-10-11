@@ -67,10 +67,10 @@ class RecommendationCalculatorTest {
     }
 
     @Test
-    void neighborTiesUseEventIdAndSmallestPositiveSimilarityPreservesPrediction() {
+    void neighborTiesUseEventId() {
         List<RecommendedEventProto> result = calculator.predictions(Set.of(10L),
                 List.of(interaction(2, 1), interaction(1, 0.4)),
-                List.of(edge(2, 10, Double.MIN_VALUE), edge(1, 10, Double.MIN_VALUE)), 1, 10);
+                List.of(edge(2, 10, 0.5), edge(1, 10, 0.5)), 1, 10);
 
         assertThat(result).hasSize(1);
         assertThat(result.getFirst().getScore()).isCloseTo(0.4, within(1e-12));

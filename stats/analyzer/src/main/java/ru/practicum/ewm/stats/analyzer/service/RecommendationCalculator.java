@@ -74,7 +74,7 @@ public class RecommendationCalculator {
 
     /**
      * Вычисляет рекомендации по кандидатам и истории взаимодействий текущего пользователя.
-     * Прогноз: sum(similarity * userWeight) / sum(similarity) по ближайшим соседям.
+     * Прогноз — средневзвешенное: sum(similarity * userWeight) / sum(similarity) по ближайшим соседям.
      *
      * @param candidates  множество кандидатов на рекомендацию
      * @param history     история взаимодействий текущего пользователя
@@ -100,14 +100,11 @@ public class RecommendationCalculator {
         for (Map.Entry<Long, Map<Long, Double>> candidate : candidateNeighbors.entrySet()) {
             List<Map.Entry<Long, Double>> nearest = candidate.getValue().entrySet().stream()
                     .sorted(NEIGHBOR_ORDER).limit(neighbors).toList();
-            double scale = nearest.getFirst().getValue();
             double weightedSum = 0;
             double similaritySum = 0;
             for (Map.Entry<Long, Double> neighbor : nearest) {
-                // Масштабирование сохраняет среднее и не даёт малым коэффициентам исчезнуть при умножении.
-                double normalized = neighbor.getValue() / scale;
-                weightedSum += normalized * weights.get(neighbor.getKey());
-                similaritySum += normalized;
+                weightedSum += neighbor.getValue() * weights.get(neighbor.getKey());
+                similaritySum += neighbor.getValue();
             }
             double score = weightedSum / similaritySum;
             if (score > 0) {
