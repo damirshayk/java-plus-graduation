@@ -96,10 +96,14 @@ public class AnalyzerClient {
             RecommendedEventProto response = stream.next();
             if (response == null || response.getEventId() <= 0 || !Double.isFinite(response.getScore())
                     || response.getScore() < 0 || normalizedScores && response.getScore() > 1) {
-                throw new IllegalStateException("Analyzer вернул некорректные данные события");
+                log.warn("Пропущен некорректный элемент ответа Analyzer: eventId={}, score={}",
+                        response == null ? null : response.getEventId(),
+                        response == null ? null : response.getScore());
+                continue;
             }
             if (!ids.add(response.getEventId())) {
-                throw new IllegalStateException("Analyzer вернул повторный идентификатор события");
+                log.warn("Пропущен повторный элемент ответа Analyzer: eventId={}", response.getEventId());
+                continue;
             }
             result.add(response);
         }

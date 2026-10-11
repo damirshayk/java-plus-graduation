@@ -40,9 +40,13 @@ class NativeConfigRepositoryTest {
         assertEquals("validate", properties.get("spring.jpa.hibernate.ddl-auto"));
         assertEquals(false, properties.get("spring.jpa.open-in-view"));
         assertFalse(properties.containsKey("stats.service-id"));
-        assertEquals(1000, properties.get("stats.client.timeout-ms"));
+        assertStatsClientProperties(properties);
         assertEquals("discovery:///collector", properties.get("grpc.client.collector.address"));
         assertEquals("discovery:///analyzer", properties.get("grpc.client.analyzer.address"));
+        assertEquals("plaintext", properties.get("grpc.client.collector.negotiation-type"));
+        assertEquals("plaintext", properties.get("grpc.client.analyzer.negotiation-type"));
+        assertEquals("round_robin", properties.get("grpc.client.collector.default-load-balancing-policy"));
+        assertEquals("round_robin", properties.get("grpc.client.analyzer.default-load-balancing-policy"));
         assertEquals(2, properties.get("ewm.display.retry.max-attempts"));
         assertEquals(100, properties.get("ewm.display.retry.backoff-ms"));
         assertEquals(10, properties.get("ewm.display.circuit-breaker.sliding-window-size"));
@@ -172,6 +176,16 @@ class NativeConfigRepositoryTest {
     }
 
     @Test
+    void grpcClientSettingsAreAbsentFromEveryNonConsumer() {
+        for (String application : List.of("user-service", "comment-service", "gateway-server",
+                "collector", "aggregator", "analyzer", "unknown-service")) {
+            for (PropertySource source : repository.findOne(application, "default", null).getPropertySources()) {
+                assertNoStatsClientProperties(source.getSource());
+            }
+        }
+    }
+
+    @Test
     void readRetryMustOnlyBeEnabledForRequestAndCommentServices() {
         for (String application : List.of("request-service", "comment-service")) {
             Map<?, ?> properties = findServiceProperties(application);
@@ -206,6 +220,25 @@ class NativeConfigRepositoryTest {
         assertEquals(1000, properties.get("spring.cloud.openfeign.client.config.default.connectTimeout"));
         assertEquals(2000, properties.get("spring.cloud.openfeign.client.config.default.readTimeout"));
         assertFalse(properties.containsKey("spring.cloud.gateway.routes[0].uri"));
+        assertStatsClientProperties(properties);
+        assertEquals("discovery:///collector", properties.get("grpc.client.collector.address"));
+        assertEquals("plaintext", properties.get("grpc.client.collector.negotiation-type"));
+        assertEquals("round_robin", properties.get("grpc.client.collector.default-load-balancing-policy"));
+        assertTrue(properties.keySet().stream().noneMatch(key -> key.toString().startsWith("grpc.client.analyzer.")));
+    }
+
+    private void assertStatsClientProperties(Map<?, ?> properties) {
+        assertEquals(1000, properties.get("stats.client.timeout-ms"));
+        assertEquals(10, properties.get("stats.client.circuit-breaker.sliding-window-size"));
+        assertEquals(1, properties.get("stats.client.circuit-breaker.minimum-number-of-calls"));
+        assertEquals(50, properties.get("stats.client.circuit-breaker.failure-rate-threshold"));
+        assertEquals(5000, properties.get("stats.client.circuit-breaker.wait-duration-in-open-state-ms"));
+        assertEquals(1, properties.get("stats.client.circuit-breaker.permitted-number-of-calls-in-half-open-state"));
+    }
+
+    private void assertNoStatsClientProperties(Map<?, ?> properties) {
+        assertTrue(properties.keySet().stream().noneMatch(key -> key.toString().startsWith("stats.client.")));
+        assertTrue(properties.keySet().stream().noneMatch(key -> key.toString().startsWith("grpc.client.")));
     }
 
     private Map<?, ?> findServiceProperties(String application) {
@@ -243,6 +276,7 @@ class NativeConfigRepositoryTest {
         assertEquals(0.4, properties.get("stats.weights.view"));
         assertEquals(0.8, properties.get("stats.weights.register"));
         assertEquals(1.0, properties.get("stats.weights.like"));
+        assertNoStatsClientProperties(properties);
         assertFalse(properties.containsKey("spring.datasource.url"));
         assertFalse(properties.containsKey("spring.kafka.producer.value-serializer"));
     }

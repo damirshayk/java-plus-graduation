@@ -7,8 +7,11 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.SerializationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
@@ -126,6 +129,48 @@ class UserActionListenerTest {
                 .isInstanceOf(IllegalStateException.class);
         assertThat(calculator.prepare(next).similarities()).hasSize(1);
         verifyNoInteractions(acknowledgment);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void shouldTreatSynchronousProducerContractFailuresAsTechnical(boolean serializerFailure) {
+        assign(null);
+        apply(action(10, ActionTypeAvro.VIEW));
+        UserActionAvro next = action(20, ActionTypeAvro.LIKE);
+        RuntimeException failure = serializerFailure
+                ? new SerializationException("Неверный сериализатор ключа", new ClassCastException())
+                : new IllegalArgumentException("Некорректная настройка отправки");
+        when(kafkaTemplate.send(ArgumentMatchers.<ProducerRecord<String, EventSimilarityAvro>>any()))
+                .thenThrow(failure);
+
+        assertThatThrownBy(() -> listener.onAction(record(1, next), acknowledgment))
+                .isInstanceOf(IllegalStateException.class).hasCause(failure);
+        assertThat(calculator.prepare(next).similarities()).hasSize(1);
+        verifyNoInteractions(acknowledgment);
+    }
+
+    @Test
+    void shouldRejectANegativePublicationTimestampAsInvalidInput() {
+        assign(null);
+        apply(action(10, ActionTypeAvro.VIEW));
+        UserActionAvro next = new UserActionAvro(1L, 20L, ActionTypeAvro.LIKE, Instant.ofEpochMilli(-1));
+
+        assertThatThrownBy(() -> listener.onAction(record(1, next), acknowledgment))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(calculator.prepare(action(20, ActionTypeAvro.LIKE)).similarities()).hasSize(1);
+        verifyNoInteractions(kafkaTemplate, acknowledgment);
+    }
+
+    @Test
+    void shouldRejectAnInvalidTimestampDuringHistoryReplay() {
+        assign(2L);
+        UserActionAvro invalid = new UserActionAvro(1L, 20L, ActionTypeAvro.LIKE, Instant.ofEpochMilli(-1));
+
+        assertThatThrownBy(() -> listener.onAction(record(0, invalid), acknowledgment))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(calculator.prepare(action(10, ActionTypeAvro.LIKE)).similarities()).isEmpty();
+        verifyNoInteractions(kafkaTemplate, acknowledgment);
+        verify(consumer, never()).commitSync(any(Map.class));
     }
 
     @Test
@@ -306,6 +351,36 @@ class UserActionListenerTest {
     void shouldNotProcessRecordsBeforeAssignmentAndRecoveryPreparation() {
         assertThatThrownBy(() -> listener.onAction(record(0, action(10, ActionTypeAvro.VIEW)), acknowledgment))
                 .isInstanceOf(IllegalStateException.class);
+        verifyNoInteractions(kafkaTemplate, acknowledgment);
+    }
+
+    @Test
+    void shouldNotRecoverBeforePartitionAssignment() {
+        assertThatThrownBy(() -> listener.recover(record(0, action(10, ActionTypeAvro.VIEW)),
+                consumer, new IllegalArgumentException()))
+                .isInstanceOf(IllegalStateException.class);
+        verifyNoInteractions(consumer, kafkaTemplate, acknowledgment);
+    }
+
+    @Test
+    void shouldNotCommitARecordFromAnotherPartition() {
+        assign(null);
+        var record = new ConsumerRecord<>(ACTIONS, 1, 0L, 1L, action(10, ActionTypeAvro.VIEW));
+
+        assertThatThrownBy(() -> listener.recover(record, consumer, new IllegalArgumentException()))
+                .isInstanceOf(IllegalStateException.class);
+        verify(consumer, never()).commitSync(any(Map.class));
+        verifyNoInteractions(kafkaTemplate, acknowledgment);
+    }
+
+    @Test
+    void shouldNotRecoverWithoutAConsumer() {
+        assign(null);
+
+        assertThatThrownBy(() -> listener.recover(record(0, action(10, ActionTypeAvro.VIEW)),
+                null, new IllegalArgumentException()))
+                .isInstanceOf(IllegalStateException.class);
+        verify(consumer, never()).commitSync(any(Map.class));
         verifyNoInteractions(kafkaTemplate, acknowledgment);
     }
 

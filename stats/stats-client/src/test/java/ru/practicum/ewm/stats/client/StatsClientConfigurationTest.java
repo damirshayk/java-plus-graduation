@@ -18,6 +18,8 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class StatsClientConfigurationTest {
@@ -29,7 +31,7 @@ class StatsClientConfigurationTest {
         GrpcChannelFactory factory = mock(GrpcChannelFactory.class);
         when(factory.createChannel("collector")).thenReturn(collectorChannel);
         when(factory.createChannel("analyzer")).thenReturn(analyzerChannel);
-        try (var context = context(factory)) {
+        try (var context = context(factory, "grpc.client.analyzer.address=discovery:///analyzer")) {
             context.refresh();
 
             StatsClientProperties properties = context.getBean(StatsClientProperties.class);
@@ -51,7 +53,8 @@ class StatsClientConfigurationTest {
 
     @Test
     void bindsEveryGrpcSettingAndIgnoresContractErrorsInCircuitBreaker() {
-        try (var context = context(factory(), "stats.client.timeout-ms=1700",
+        try (var context = context(factory(), "grpc.client.analyzer.address=discovery:///analyzer",
+                "stats.client.timeout-ms=1700",
                 "stats.client.circuit-breaker.sliding-window-size=12",
                 "stats.client.circuit-breaker.minimum-number-of-calls=3",
                 "stats.client.circuit-breaker.failure-rate-threshold=75",
@@ -74,6 +77,22 @@ class StatsClientConfigurationTest {
                 assertThat(breaker.getCircuitBreakerConfig().getIgnoreExceptionPredicate()
                         .test(new IllegalStateException("Некорректный ответ"))).isTrue();
             }
+        }
+    }
+
+    @Test
+    void collectorOnlyConfigurationDoesNotCreateAnalyzerChannelOrBeans() {
+        GrpcChannelFactory factory = factory();
+        try (var context = context(factory)) {
+            context.refresh();
+
+            assertThat(context.getBeanNamesForType(CollectorClient.class)).hasSize(1);
+            assertThat(context.getBeanNamesForType(AnalyzerClient.class)).isEmpty();
+            assertThat(context.getBeanNamesForType(
+                    RecommendationsControllerGrpc.RecommendationsControllerBlockingStub.class)).isEmpty();
+            assertThat(context.getBeansOfType(CircuitBreaker.class)).containsOnlyKeys("collectorCircuitBreaker");
+            verify(factory).createChannel("collector");
+            verify(factory, never()).createChannel("analyzer");
         }
     }
 
@@ -100,6 +119,8 @@ class StatsClientConfigurationTest {
 
     private AnnotationConfigApplicationContext context(GrpcChannelFactory factory, String... properties) {
         var context = new AnnotationConfigApplicationContext();
+        TestPropertySourceUtils.addInlinedPropertiesToEnvironment(context,
+                "grpc.client.collector.address=discovery:///collector");
         TestPropertySourceUtils.addInlinedPropertiesToEnvironment(context, properties);
         context.registerBean(GrpcChannelFactory.class, () -> factory);
         context.registerBean("grpcNameResolverRegistration", NameResolverRegistration.class,

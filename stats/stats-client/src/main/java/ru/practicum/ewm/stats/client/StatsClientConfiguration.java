@@ -4,6 +4,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import net.devh.boot.grpc.client.channelfactory.GrpcChannelFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -25,6 +26,7 @@ public class StatsClientConfiguration {
     }
 
     @Bean
+    @ConditionalOnProperty(name = "grpc.client.analyzer.address")
     @DependsOn("grpcNameResolverRegistration")
     public RecommendationsControllerGrpc.RecommendationsControllerBlockingStub analyzerStub(GrpcChannelFactory factory) {
         return RecommendationsControllerGrpc.newBlockingStub(factory.createChannel("analyzer"));
@@ -36,6 +38,7 @@ public class StatsClientConfiguration {
     }
 
     @Bean
+    @ConditionalOnProperty(name = "grpc.client.analyzer.address")
     public CircuitBreaker analyzerCircuitBreaker(StatsClientProperties properties) {
         return circuitBreaker("analyzer", properties);
     }
@@ -48,6 +51,7 @@ public class StatsClientConfiguration {
     }
 
     @Bean
+    @ConditionalOnProperty(name = "grpc.client.analyzer.address")
     public AnalyzerClient analyzerClient(RecommendationsControllerGrpc.RecommendationsControllerBlockingStub stub,
                                          StatsClientProperties properties,
                                          @Qualifier("analyzerCircuitBreaker") CircuitBreaker circuitBreaker) {

@@ -4,6 +4,7 @@ import ru.practicum.ewm.stats.avro.EventSimilarityAvro;
 import ru.practicum.ewm.stats.avro.UserActionAvro;
 import ru.practicum.ewm.stats.serialization.ActionWeights;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -17,7 +18,7 @@ import java.util.Objects;
 public class SimilarityCalculator {
 
     private final ActionWeights weights;
-    private final Map<Long, Map<Long, Double>> eventWeights = new LinkedHashMap<>();
+    private final Map<Long, Map<Long, Double>> userEventWeights = new HashMap<>();
     private final Map<Long, Double> eventSums = new HashMap<>();
     private final Map<EventPair, Double> pairMinSums = new HashMap<>();
     private long revision;
@@ -39,15 +40,21 @@ public class SimilarityCalculator {
      * @return подготовленное обновление калькулятора сходства событий
      */
     public PreparedUpdate prepare(UserActionAvro action) {
+        // Kafka не принимает отрицательный timestamp; при replay нужна та же проверка, что для новых действий.
+        if (action == null || action.getUserId() <= 0 || action.getEventId() <= 0
+                || action.getActionType() == null || action.getTimestamp() == null
+                || action.getTimestamp().isBefore(Instant.EPOCH)) {
+            throw new IllegalArgumentException("Действие должно содержать положительные ID, тип и допустимое время");
+        }
         long eventId = action.getEventId();
         long userId = action.getUserId();
         double newWeight = weights.weight(action.getActionType());
-        Map<Long, Double> userWeights = eventWeights.get(eventId);
-        double oldWeight = userWeights == null ? 0.0 : userWeights.getOrDefault(userId, 0.0);
+        Map<Long, Double> userWeights = userEventWeights.getOrDefault(userId, Map.of());
+        double oldWeight = userWeights.getOrDefault(eventId, 0.0);
         double oldSum = eventSums.getOrDefault(eventId, 0.0);
 
         // Повторы и более слабые действия не меняют максимальный вес взаимодействия.
-        if (userWeights != null && newWeight <= oldWeight) {
+        if (userWeights.containsKey(eventId) && newWeight <= oldWeight) {
             return new PreparedUpdate(this, revision, userId, eventId, oldWeight, oldSum,
                     Map.of(), List.of(), false);
         }
@@ -56,12 +63,12 @@ public class SimilarityCalculator {
         Map<EventPair, Double> newPairMinSums = new HashMap<>();
         List<EventSimilarityAvro> similarities = new ArrayList<>();
         // Пересчитываем пары только с другими событиями из истории текущего пользователя.
-        for (var entry : eventWeights.entrySet()) {
+        for (var entry : userWeights.entrySet()) {
             long otherEvent = entry.getKey();
             if (otherEvent == eventId) {
                 continue;
             }
-            double otherWeight = entry.getValue().getOrDefault(userId, 0.0);
+            double otherWeight = entry.getValue();
             if (otherWeight == 0.0) {
                 continue;
             }
@@ -98,8 +105,8 @@ public class SimilarityCalculator {
         if (!update.changed) {
             return;
         }
-        eventWeights.computeIfAbsent(update.eventId, ignored -> new HashMap<>())
-                .put(update.userId, update.newWeight);
+        userEventWeights.computeIfAbsent(update.userId, ignored -> new LinkedHashMap<>())
+                .put(update.eventId, update.newWeight);
         eventSums.put(update.eventId, update.newSum);
         pairMinSums.putAll(update.newPairMinSums);
         revision++;
@@ -109,7 +116,7 @@ public class SimilarityCalculator {
      * Сбрасывает состояние калькулятора сходства событий.
      */
     public void reset() {
-        eventWeights.clear();
+        userEventWeights.clear();
         eventSums.clear();
         pairMinSums.clear();
         revision++;

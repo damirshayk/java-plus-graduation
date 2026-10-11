@@ -1,5 +1,6 @@
 package ru.practicum.ewm.stats.aggregator.kafka;
 
+import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -19,6 +20,7 @@ import ru.practicum.ewm.stats.avro.UserActionAvro;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -26,6 +28,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 @Component
+@Slf4j
 public class UserActionListener implements ConsumerAwareRebalanceListener {
 
     private final SimilarityCalculator calculator;
@@ -47,10 +50,7 @@ public class UserActionListener implements ConsumerAwareRebalanceListener {
     @KafkaListener(id = "aggregator-user-actions", idIsGroup = false,
             topics = "${stats.kafka.topics.user-actions}", concurrency = "1")
     public void onAction(ConsumerRecord<Long, UserActionAvro> record, Acknowledgment acknowledgment) {
-        if (assignedPartition == null || !assignedPartition.topic().equals(record.topic())
-                || assignedPartition.partition() != record.partition()) {
-            throw new IllegalStateException("Матрица не подготовлена для назначенной партиции");
-        }
+        requireAssignedPartition(record);
         var update = calculator.prepare(record.value());
         if (record.offset() < replayBoundary) {
             // История уже подтверждена брокером: восстанавливаем память, не откатывая offset и сходства Analyzer.
@@ -61,8 +61,12 @@ public class UserActionListener implements ConsumerAwareRebalanceListener {
         List<CompletableFuture<SendResult<String, EventSimilarityAvro>>> publications = new ArrayList<>();
         for (EventSimilarityAvro similarity : update.similarities()) {
             String key = similarity.getEventA() + ":" + similarity.getEventB();
-            publications.add(kafkaTemplate.send(new ProducerRecord<>(similarityTopic, null,
-                    similarity.getTimestamp().toEpochMilli(), key, similarity)));
+            try {
+                publications.add(kafkaTemplate.send(new ProducerRecord<>(similarityTopic, null,
+                        similarity.getTimestamp().toEpochMilli(), key, similarity)));
+            } catch (RuntimeException exception) {
+                throw new IllegalStateException("Не удалось отправить сходство", exception);
+            }
         }
         try {
             CompletableFuture.allOf(publications.toArray(new CompletableFuture<?>[0]))
@@ -75,6 +79,26 @@ public class UserActionListener implements ConsumerAwareRebalanceListener {
         }
         calculator.apply(update);
         acknowledgment.acknowledge();
+    }
+
+    public void recover(ConsumerRecord<?, ?> record, Consumer<?, ?> consumer, Exception exception) {
+        requireAssignedPartition(record);
+        if (consumer == null) {
+            throw new IllegalStateException("Потребитель отсутствует при пропуске некорректного действия");
+        }
+        // В исторической части нельзя откатывать уже подтверждённое смещение к повреждённой записи.
+        if (record.offset() >= replayBoundary) {
+            consumer.commitSync(Map.of(assignedPartition, new OffsetAndMetadata(record.offset() + 1)));
+        }
+        log.warn("Пропущено некорректное действие: topic={}, partition={}, offset={}, type={}",
+                record.topic(), record.partition(), record.offset(), exception.getClass().getSimpleName());
+    }
+
+    private void requireAssignedPartition(ConsumerRecord<?, ?> record) {
+        if (assignedPartition == null || !assignedPartition.topic().equals(record.topic())
+                || assignedPartition.partition() != record.partition()) {
+            throw new IllegalStateException("Матрица не подготовлена для назначенной партиции");
+        }
     }
 
     @Override

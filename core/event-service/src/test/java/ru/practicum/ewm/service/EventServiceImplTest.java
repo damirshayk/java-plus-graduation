@@ -52,7 +52,7 @@ class EventServiceImplTest {
     @Mock
     private EventMapper eventMapper;
     @Mock
-    private AnalyzerClient statsClient;
+    private AnalyzerClient analyzerClient;
     private EventServiceImpl eventService;
 
     @BeforeEach
@@ -66,7 +66,7 @@ class EventServiceImplTest {
                 eventMapper,
                 confirmedRequestCounter,
                 new EventDisplayEnrichment(userDirectory, confirmedRequestCounter, displayProperties),
-                statsClient,
+                analyzerClient,
                 userDataGuard,
                 transactionManager,
                 2 // Дефолтное значение для тестов
@@ -109,7 +109,7 @@ class EventServiceImplTest {
         event.setInitiatorId(user.getId());
         when(userDirectory.require(1L)).thenReturn(user);
         when(eventRepository.findById(10L)).thenReturn(Optional.of(event));
-        when(statsClient.ratings(List.of(10L))).thenReturn(Map.of(10L, 7.4));
+        when(analyzerClient.ratings(List.of(10L))).thenReturn(Map.of(10L, 7.4));
 
         eventService.getUserEvent(1L, 10L);
 
@@ -270,7 +270,7 @@ class EventServiceImplTest {
         when(eventRepository.findAll(org.mockito.ArgumentMatchers.<Specification<Event>>any(),
                 org.mockito.ArgumentMatchers.any(Sort.class))).thenReturn(List.of(first, second));
         when(confirmedRequestCounter.countAll(List.of(10L, 20L))).thenReturn(Map.of());
-        when(statsClient.ratings(List.of(10L, 20L))).thenReturn(Map.of(10L, 2.4, 20L, 7.4));
+        when(analyzerClient.ratings(List.of(10L, 20L))).thenReturn(Map.of(10L, 2.4, 20L, 7.4));
         when(eventMapper.toShortDto(first, user, 0L, 2.4)).thenReturn(firstDto);
         when(eventMapper.toShortDto(second, user, 0L, 7.4)).thenReturn(secondDto);
 

@@ -24,6 +24,41 @@ class SimilarityCalculatorTest {
     }
 
     @Test
+    void shouldRejectAnAbsentActionWithoutChangingState() {
+        assertThatThrownBy(() -> calculator.prepare(null)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(process(1, 10, ActionTypeAvro.VIEW)).isEmpty();
+    }
+
+    @Test
+    void shouldRejectNonPositiveIdentifiers() {
+        assertThatThrownBy(() -> calculator.prepare(new UserActionAvro(0L, 10L, ActionTypeAvro.VIEW, TIMESTAMP)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> calculator.prepare(new UserActionAvro(1L, -10L, ActionTypeAvro.VIEW, TIMESTAMP)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectMissingTypeOrTimestampWithoutChangingState() {
+        var withoutTimestamp = new UserActionAvro();
+        withoutTimestamp.setUserId(1L);
+        withoutTimestamp.setEventId(10L);
+        withoutTimestamp.setActionType(ActionTypeAvro.VIEW);
+        assertThatThrownBy(() -> calculator.prepare(new UserActionAvro(1L, 10L, null, TIMESTAMP)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> calculator.prepare(withoutTimestamp))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(process(1, 20, ActionTypeAvro.LIKE)).isEmpty();
+    }
+
+    @Test
+    void shouldRejectNegativeTimestampWithoutChangingState() {
+        var invalid = new UserActionAvro(1L, 10L, ActionTypeAvro.LIKE, Instant.ofEpochMilli(-1));
+
+        assertThatThrownBy(() -> calculator.prepare(invalid)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(process(1, 20, ActionTypeAvro.LIKE)).isEmpty();
+    }
+
+    @Test
     void shouldCompareNewEventWithTheCurrentUsersHistory() {
         process(1, 10, ActionTypeAvro.VIEW);
         process(1, 20, ActionTypeAvro.LIKE);

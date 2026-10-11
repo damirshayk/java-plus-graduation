@@ -21,25 +21,25 @@ class RecommendationApiTest {
     @Mock
     private EventService eventService;
     @Mock
-    private CollectorClient statsClient;
+    private CollectorClient collectorClient;
     private MockMvc mvc;
 
     @BeforeEach
     void setUp() {
-        mvc = MockMvcBuilders.standaloneSetup(new PublicEventController(eventService, statsClient))
+        mvc = MockMvcBuilders.standaloneSetup(new PublicEventController(eventService, collectorClient))
                 .setControllerAdvice(new ErrorHandler()).build();
     }
 
     @Test
     void catalogDoesNotPublishView() throws Exception {
         mvc.perform(get("/events")).andExpect(status().isOk());
-        verifyNoInteractions(statsClient);
+        verifyNoInteractions(collectorClient);
     }
 
     @Test
     void singleEventRequiresUserHeader() throws Exception {
         mvc.perform(get("/events/10")).andExpect(status().isBadRequest());
-        verifyNoInteractions(eventService, statsClient);
+        verifyNoInteractions(eventService, collectorClient);
     }
 
     @Test
@@ -51,6 +51,6 @@ class RecommendationApiTest {
     @Test
     void recommendationsRequireUserHeader() throws Exception {
         mvc.perform(get("/events/recommendations")).andExpect(status().isBadRequest());
-        verifyNoInteractions(eventService, statsClient);
+        verifyNoInteractions(eventService, collectorClient);
     }
 }

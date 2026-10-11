@@ -219,52 +219,122 @@ class GrpcClientsTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"INVALID_ARGUMENT", "INTERNAL", "UNKNOWN"})
+    @ValueSource(strings = {"INVALID_ARGUMENT", "INTERNAL", "UNKNOWN", "PERMISSION_DENIED"})
     void permanentStreamFailuresAreNotHidden(String code) {
         when(timedAnalyzer.getInteractionsCount(any())).thenReturn(brokenStream(status(code)));
+        when(timedAnalyzer.getRecommendationsForUser(any())).thenReturn(brokenStream(status(code)));
+        when(timedAnalyzer.getSimilarEvents(any())).thenReturn(brokenStream(status(code)));
 
         assertThatThrownBy(() -> analyzer.ratings(List.of(1L))).hasMessageContaining(code);
+        assertThatThrownBy(() -> analyzer.recommendations(1, 3)).hasMessageContaining(code);
+        assertThatThrownBy(() -> analyzer.similar(2, 1, 3)).hasMessageContaining(code);
     }
 
     @ParameterizedTest
     @ValueSource(doubles = {-1, Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
-    void malformedRatingsScoresAreNotHidden(double score) {
-        when(timedAnalyzer.getInteractionsCount(any())).thenReturn(List.of(event(1, score)).iterator());
+    void malformedRatingsScoresAreSkippedWithoutDiscardingValidResponses(double score) {
+        when(timedAnalyzer.getInteractionsCount(any()))
+                .thenReturn(List.of(event(9, 12.5), event(1, score), event(3, 0)).iterator());
 
-        assertThatThrownBy(() -> analyzer.ratings(List.of(1L))).isInstanceOf(IllegalStateException.class);
+        assertThat(analyzer.ratings(List.of(9L, 1L, 3L))).isEqualTo(Map.of(9L, 12.5, 3L, 0D));
     }
 
     @ParameterizedTest
-    @ValueSource(doubles = {-1, 1.01, Double.NaN, Double.POSITIVE_INFINITY})
-    void malformedRecommendationAndSimilarityScoresAreNotHidden(double score) {
-        when(timedAnalyzer.getRecommendationsForUser(any())).thenReturn(List.of(event(1, score)).iterator());
-        when(timedAnalyzer.getSimilarEvents(any())).thenReturn(List.of(event(1, score)).iterator());
+    @ValueSource(doubles = {-1, 1.01, Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY})
+    void malformedRecommendationAndSimilarityScoresAreSkippedPreservingValidOrder(double score) {
+        List<RecommendedEventProto> responses = List.of(event(9, 1), event(1, score), event(3, 0));
+        when(timedAnalyzer.getRecommendationsForUser(any())).thenReturn(responses.iterator());
+        when(timedAnalyzer.getSimilarEvents(any())).thenReturn(responses.iterator());
 
-        assertThatThrownBy(() -> analyzer.recommendations(1, 1)).isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> analyzer.similar(2, 1, 1)).isInstanceOf(IllegalStateException.class);
+        assertThat(analyzer.recommendations(1, 3)).containsExactly(event(9, 1), event(3, 0));
+        assertThat(analyzer.similar(2, 1, 3)).containsExactly(event(9, 1), event(3, 0));
     }
 
     @Test
-    void duplicateResponseIdsAreRejectedForEveryRead() {
-        List<RecommendedEventProto> duplicated = List.of(event(1, 0.5), event(1, 0.7));
+    void duplicateResponseIdsKeepFirstValidResponseForEveryRead() {
+        List<RecommendedEventProto> duplicated = List.of(event(1, 0.5), event(3, 0), event(1, 0.7), event(5, 1));
         when(timedAnalyzer.getInteractionsCount(any())).thenReturn(duplicated.iterator());
         when(timedAnalyzer.getRecommendationsForUser(any())).thenReturn(duplicated.iterator());
         when(timedAnalyzer.getSimilarEvents(any())).thenReturn(duplicated.iterator());
 
-        assertThatThrownBy(() -> analyzer.ratings(List.of(1L))).isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> analyzer.recommendations(1, 2)).isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> analyzer.similar(2, 1, 2)).isInstanceOf(IllegalStateException.class);
+        assertThat(analyzer.ratings(List.of(1L, 3L, 5L))).isEqualTo(Map.of(1L, 0.5, 3L, 0D, 5L, 1D));
+        assertThat(analyzer.recommendations(1, 4)).containsExactly(event(1, 0.5), event(3, 0), event(5, 1));
+        assertThat(analyzer.similar(2, 1, 4)).containsExactly(event(1, 0.5), event(3, 0), event(5, 1));
     }
 
     @Test
-    void invalidResponseIdAndMissingResponseAreRejected() {
-        when(timedAnalyzer.getInteractionsCount(any())).thenReturn(List.of(event(0, 1)).iterator());
-        when(timedAnalyzer.getRecommendationsForUser(any())).thenReturn(Arrays.asList((RecommendedEventProto) null).iterator());
+    void malformedFirstResponseDoesNotReserveIdForEveryRead() {
+        List<RecommendedEventProto> responses = List.of(event(1, Double.NaN), event(3, 0.7), event(1, 0.5));
+        when(timedAnalyzer.getInteractionsCount(any())).thenReturn(responses.iterator());
+        when(timedAnalyzer.getRecommendationsForUser(any())).thenReturn(responses.iterator());
+        when(timedAnalyzer.getSimilarEvents(any())).thenReturn(responses.iterator());
+
+        assertThat(analyzer.ratings(List.of(1L, 3L))).isEqualTo(Map.of(3L, 0.7, 1L, 0.5));
+        assertThat(analyzer.recommendations(1, 3)).containsExactly(event(3, 0.7), event(1, 0.5));
+        assertThat(analyzer.similar(2, 1, 3)).containsExactly(event(3, 0.7), event(1, 0.5));
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {0, -1})
+    void invalidResponseIdIsSkippedPreservingValidOrderForEveryRead(long eventId) {
+        List<RecommendedEventProto> responses = List.of(event(9, 1), event(eventId, 0.5), event(3, 0));
+        when(timedAnalyzer.getInteractionsCount(any())).thenReturn(responses.iterator());
+        when(timedAnalyzer.getRecommendationsForUser(any())).thenReturn(responses.iterator());
+        when(timedAnalyzer.getSimilarEvents(any())).thenReturn(responses.iterator());
+
+        assertThat(analyzer.ratings(List.of(9L, 3L))).isEqualTo(Map.of(9L, 1D, 3L, 0D));
+        assertThat(analyzer.recommendations(1, 3)).containsExactly(event(9, 1), event(3, 0));
+        assertThat(analyzer.similar(2, 1, 3)).containsExactly(event(9, 1), event(3, 0));
+    }
+
+    @Test
+    void missingResponseIsSkippedPreservingValidOrderForEveryRead() {
+        List<RecommendedEventProto> responses = Arrays.asList(event(9, 0.5), null, event(3, 0.7));
+        when(timedAnalyzer.getInteractionsCount(any())).thenReturn(responses.iterator());
+        when(timedAnalyzer.getRecommendationsForUser(any())).thenReturn(responses.iterator());
+        when(timedAnalyzer.getSimilarEvents(any())).thenReturn(responses.iterator());
+
+        assertThat(analyzer.ratings(List.of(9L, 3L))).isEqualTo(Map.of(9L, 0.5, 3L, 0.7));
+        assertThat(analyzer.recommendations(1, 3)).containsExactly(event(9, 0.5), event(3, 0.7));
+        assertThat(analyzer.similar(2, 1, 3)).containsExactly(event(9, 0.5), event(3, 0.7));
+    }
+
+    @Test
+    void missingResponseStreamIsRejectedForEveryRead() {
+        when(timedAnalyzer.getInteractionsCount(any())).thenReturn(null);
+        when(timedAnalyzer.getRecommendationsForUser(any())).thenReturn(null);
         when(timedAnalyzer.getSimilarEvents(any())).thenReturn(null);
 
         assertThatThrownBy(() -> analyzer.ratings(List.of(1L))).isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> analyzer.recommendations(1, 1)).isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> analyzer.similar(2, 1, 1)).isInstanceOf(IllegalStateException.class);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void unexpectedStreamIterationErrorsAreNotHidden(boolean failOnHasNext) {
+        RuntimeException failure = new IllegalStateException("Ошибка чтения потока");
+        Iterator<RecommendedEventProto> broken = new Iterator<>() {
+            @Override
+            public boolean hasNext() {
+                if (failOnHasNext) {
+                    throw failure;
+                }
+                return true;
+            }
+
+            @Override
+            public RecommendedEventProto next() {
+                throw failure;
+            }
+        };
+        when(timedAnalyzer.getInteractionsCount(any())).thenReturn(broken);
+        when(timedAnalyzer.getRecommendationsForUser(any())).thenReturn(broken);
+        when(timedAnalyzer.getSimilarEvents(any())).thenReturn(broken);
+
+        assertThatThrownBy(() -> analyzer.ratings(List.of(1L))).isSameAs(failure);
+        assertThatThrownBy(() -> analyzer.recommendations(1, 1)).isSameAs(failure);
+        assertThatThrownBy(() -> analyzer.similar(2, 1, 1)).isSameAs(failure);
     }
 
     @Test

@@ -16,9 +16,9 @@ public class AnalyzerIngestionService {
     private final ActionWeights weights;
 
     public AnalyzerIngestionService(InteractionRepository interactions, SimilarityRepository similarities,
-                                    @Value("${stats.weights.view:0.4}") double view,
-                                    @Value("${stats.weights.register:0.8}") double register,
-                                    @Value("${stats.weights.like:1.0}") double like) {
+                                    @Value("${stats.weights.view}") double view,
+                                    @Value("${stats.weights.register}") double register,
+                                    @Value("${stats.weights.like}") double like) {
         this.interactions = interactions;
         this.similarities = similarities;
         this.weights = new ActionWeights(view, register, like);

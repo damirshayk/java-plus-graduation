@@ -124,14 +124,24 @@ class Stage3RecommendationServiceTest {
     }
 
     @Test
-    void futureEventMustNotPermitLikeEvenBeforeAttendanceRequest() {
+    void confirmedParticipantMayLikeFuturePublishedEvent() {
         Event event = event(10L, 1L, EventState.PUBLISHED);
         event.setEventDate(LocalDateTime.now().plusDays(1));
         when(events.findById(10L)).thenReturn(Optional.of(event));
+        when(requests.hasConfirmedRequest(5L, 10L)).thenReturn(true);
 
+        assertDoesNotThrow(() -> service.validateLike(5L, 10L));
+
+        verify(requests).hasConfirmedRequest(5L, 10L);
+    }
+
+    @Test
+    void futureEventWithoutConfirmedRequestMustNotPermitLike() {
+        Event event = event(10L, 1L, EventState.PUBLISHED);
+        event.setEventDate(LocalDateTime.now().plusDays(1));
+        when(events.findById(10L)).thenReturn(Optional.of(event));
         assertThatThrownBy(() -> service.validateLike(5L, 10L)).isInstanceOf(ValidationException.class);
-
-        verifyNoInteractions(requests);
+        verify(requests).hasConfirmedRequest(5L, 10L);
     }
 
     @Test

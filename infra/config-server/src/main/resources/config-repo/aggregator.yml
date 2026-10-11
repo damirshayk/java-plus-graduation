@@ -7,9 +7,10 @@ spring:
       group-id: aggregator
       enable-auto-commit: false
       auto-offset-reset: earliest
-      key-deserializer: org.apache.kafka.common.serialization.LongDeserializer
+      key-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
+        spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.LongDeserializer
         spring.deserializer.value.delegate.class: ru.practicum.ewm.stats.serialization.UserActionDeserializer
         max.poll.interval.ms: 300000
       max-poll-records: 50

@@ -40,7 +40,7 @@ class EventControllerTest {
     @Mock
     private EventService eventService;
     @Mock
-    private CollectorClient statsClient;
+    private CollectorClient collectorClient;
     private MockMvc mockMvc;
 
     @BeforeEach
@@ -48,7 +48,7 @@ class EventControllerTest {
         mockMvc = MockMvcBuilders.standaloneSetup(
                 validated(new PrivateEventController(eventService)),
                 validated(new AdminEventController(eventService)),
-                validated(new PublicEventController(eventService, statsClient))
+                validated(new PublicEventController(eventService, collectorClient))
         ).setControllerAdvice(new ErrorHandler()).build();
     }
 
@@ -80,7 +80,7 @@ class EventControllerTest {
         mockMvc.perform(get("/events/10").header("X-EWM-USER-ID", 5))
                 .andExpect(status().isOk());
 
-        verify(statsClient).collect(5L, 10L, ActionTypeProto.ACTION_VIEW);
+        verify(collectorClient).collect(5L, 10L, ActionTypeProto.ACTION_VIEW);
     }
 
     @Test
@@ -134,10 +134,10 @@ class EventControllerTest {
         var stub = mock(UserActionControllerGrpc.UserActionControllerBlockingStub.class);
         when(stub.withDeadlineAfter(anyLong(), any(TimeUnit.class))).thenReturn(stub);
         when(stub.collectUserAction(any())).thenThrow(Status.UNAVAILABLE.asRuntimeException());
-        CollectorClient realStatsClient = new CollectorClient(stub, new StatsClientProperties(),
+        CollectorClient realCollectorClient = new CollectorClient(stub, new StatsClientProperties(),
                 CircuitBreaker.ofDefaults("collector-api-test"));
         return MockMvcBuilders.standaloneSetup(
-                validated(new PublicEventController(eventService, realStatsClient))
+                validated(new PublicEventController(eventService, realCollectorClient))
         ).setControllerAdvice(new ErrorHandler()).build();
     }
 

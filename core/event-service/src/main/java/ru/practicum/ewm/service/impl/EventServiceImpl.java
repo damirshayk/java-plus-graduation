@@ -43,7 +43,7 @@ public class EventServiceImpl implements EventService {
     private final EventMapper eventMapper;
     private final ConfirmedRequestCounter confirmedRequestCounter;
     private final EventDisplayEnrichment displayEnrichment;
-    private final AnalyzerClient statsClient;
+    private final AnalyzerClient analyzerClient;
     private final int minStartDelayHours;
 
     public EventServiceImpl(
@@ -53,7 +53,7 @@ public class EventServiceImpl implements EventService {
             EventMapper eventMapper,
             ConfirmedRequestCounter confirmedRequestCounter,
             EventDisplayEnrichment displayEnrichment,
-            AnalyzerClient statsClient,
+            AnalyzerClient analyzerClient,
             UserDataGuard userDataGuard,
             PlatformTransactionManager transactionManager,
             @Value("${ewm.events.min-start-delay-hours}") int minStartDelayHours) {
@@ -65,7 +65,7 @@ public class EventServiceImpl implements EventService {
         this.eventMapper = eventMapper;
         this.confirmedRequestCounter = confirmedRequestCounter;
         this.displayEnrichment = displayEnrichment;
-        this.statsClient = statsClient;
+        this.analyzerClient = analyzerClient;
         this.minStartDelayHours = minStartDelayHours;
     }
 
@@ -128,7 +128,7 @@ public class EventServiceImpl implements EventService {
         validateEventDate(request.getEventDate());
         UserShortDto initiator = displayEnrichment.requireUser(userId);
         long confirmed = displayEnrichment.confirmedCounts(List.of(eventId)).getOrDefault(eventId, 0L);
-        double rating = statsClient.ratings(List.of(eventId)).getOrDefault(eventId, 0.0);
+        double rating = analyzerClient.ratings(List.of(eventId)).getOrDefault(eventId, 0.0);
         return transactionTemplate.execute(status -> {
             userDataGuard.lockForCreate(userId);
             Event event = requireOwnedEvent(userId, eventId);
@@ -221,7 +221,7 @@ public class EventServiceImpl implements EventService {
         }
         UserShortDto initiator = displayEnrichment.requireUser(snapshot.initiatorId());
         long confirmed = displayEnrichment.confirmedCounts(List.of(eventId)).getOrDefault(eventId, 0L);
-        double rating = statsClient.ratings(List.of(eventId)).getOrDefault(eventId, 0.0);
+        double rating = analyzerClient.ratings(List.of(eventId)).getOrDefault(eventId, 0.0);
         return transactionTemplate.execute(status -> {
             userDataGuard.lockForCreate(snapshot.initiatorId());
             Event event = eventRepository.findById(eventId)
@@ -326,12 +326,12 @@ public class EventServiceImpl implements EventService {
 
     private Map<Long, Double> ratings(List<Event> events) {
         if (events.isEmpty()) return Map.of();
-        return statsClient.ratings(events.stream().map(Event::getId).distinct().toList());
+        return analyzerClient.ratings(events.stream().map(Event::getId).distinct().toList());
     }
 
     @Override
     public List<EventShortDto> getRecommendations(Long userId, int size) {
-        List<RecommendedEventProto> recommendations = statsClient.recommendations(userId, size);
+        List<RecommendedEventProto> recommendations = analyzerClient.recommendations(userId, size);
         if (recommendations.isEmpty()) return List.of();
         List<Long> ids = recommendations.stream().map(RecommendedEventProto::getEventId).toList();
         Map<Long, Event> found = eventRepository.findAllById(ids).stream()
@@ -347,13 +347,12 @@ public class EventServiceImpl implements EventService {
 
     @Override
     public void validateLike(Long userId, Long eventId) {
-        Event event = eventRepository.findById(eventId)
+        eventRepository.findById(eventId)
                 .filter(found -> found.getState() == EventState.PUBLISHED)
                 .orElseThrow(() -> new NotFoundException("Опубликованное событие с id=" + eventId + " не найдено"));
-        if (event.getEventDate().isAfter(LocalDateTime.now())
-                || !confirmedRequestCounter.hasConfirmedRequest(userId, eventId)) {
+        if (!confirmedRequestCounter.hasConfirmedRequest(userId, eventId)) {
             throw new ru.practicum.ewm.exception.ValidationException(
-                    "Поставить лайк может только участник прошедшего мероприятия");
+                    "Поставить лайк может только пользователь с подтверждённой заявкой на мероприятие");
         }
     }
 
